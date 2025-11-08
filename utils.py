@@ -1,6 +1,5 @@
 import sys
 import face_recognition
-from concurrent.futures import ThreadPoolExecutor
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -13,913 +12,721 @@ import shutil
 import keyboard
 import pyautogui
 import pygetwindow as gw
-import webbrowser
-import pyperclip
 from ultralytics import YOLO
 import threading
-from multiprocessing import Process
 import pyaudio
 import struct
 import wave
 import datetime
 import subprocess
+import traceback
 
-#Variables
-#All Related
+from concurrent.futures import ThreadPoolExecutor
+executor = ThreadPoolExecutor(max_workers=6)
+
+# -------------------- Global Vars --------------------
 Globalflag = False
 Student_Name = ''
-start_time = [0, 0, 0, 0, 0]
-end_time = [0, 0, 0, 0, 0]
-recorded_durations = []
-prev_state = ['Verified Student appeared', "Forward", "Only one person is detected", "Stay in the Test", "No Electronic Device Detected"]
-flag = [False, False, False, False, False]
-capb= cv2.VideoCapture(0)
-width= int(capb.get(cv2.CAP_PROP_FRAME_WIDTH))
-height= int(capb.get(cv2.CAP_PROP_FRAME_HEIGHT))
-capb.release()
-capa = cv2.VideoCapture("test_V.mp4")
-EDWidth=int(capa.get(cv2.CAP_PROP_FRAME_WIDTH))
-EDHeight=int(capa.get(cv2.CAP_PROP_FRAME_HEIGHT))
-capa.release()
-video = [(str(random.randint(1,50000))+".mp4"), (str(random.randint(1,50000))+".mp4"), (str(random.randint(1,50000))+".mp4"), (str(random.randint(1,50000))+".mp4"), (str(random.randint(1,50000))+".mp4")]
-writer = [cv2.VideoWriter(video[0], cv2.VideoWriter_fourcc(*'mp4v'), 20, (width,height)), cv2.VideoWriter(video[1], cv2.VideoWriter_fourcc(*'mp4v'), 20, (width,height)), cv2.VideoWriter(video[2], cv2.VideoWriter_fourcc(*'mp4v'), 20, (width,height)), cv2.VideoWriter(video[3], cv2.VideoWriter_fourcc(*'mp4v'), 15, (1920, 1080)), cv2.VideoWriter(video[4], cv2.VideoWriter_fourcc(*'mp4v'), 20 , (EDWidth,EDHeight))]
-#More than One Person Related
-mpFaceDetection = mp.solutions.face_detection  # Detect the face
-mpDraw = mp.solutions.drawing_utils  # Draw the required Things for BBox
-faceDetection = mpFaceDetection.FaceDetection(0.75)# It has 0 to 1 (Change this to make it more detectable) Default is 0.5 and higher means more detection.
-#Screen Related
 shorcuts = []
-active_window = None # Store the initial active window and its title
-active_window_title = "Exam — Mozilla Firefox"
-exam_window_title = active_window_title
-#ED Related
-my_file = open("utils/coco.txt", "r") # opening the file in read mode
-data = my_file.read() # reading the file
-class_list = data.split("\n") # replacing end splitting the text | when newline ('\n') is seen.
-my_file.close()
-detected_things = []
-detection_colors = [] # Generate random colors for class list
-for i in range(len(class_list)):
-    r = random.randint(0, 255)
-    g = random.randint(0, 255)
-    b = random.randint(0, 255)
-    detection_colors.append((b, g, r))
-model = YOLO("yolov8n.pt", "v8") # load a pretrained YOLOv8n model
-EDFlag = False
-#Voice Related
-TRIGGER_RMS = 10  # start recording above 10
-RATE = 16000  # sample rate
-TIMEOUT_SECS = 3  # silence time after which recording stops
-FRAME_SECS = 0.25  # length of frame(chunks) to be processed at once in secs
-CUSHION_SECS = 1  # amount of recording before and after sound
-SHORT_NORMALIZE = (1.0 / 32768.0)
-FORMAT = pyaudio.paInt16
-CHANNELS = 1
-SHORT_WIDTH = 2
-CHUNK = int(RATE * FRAME_SECS)
-CUSHION_FRAMES = int(CUSHION_SECS / FRAME_SECS)
-TIMEOUT_FRAMES = int(TIMEOUT_SECS / FRAME_SECS)
-f_name_directory = 'C:/Users/kaungmyat/PycharmProjects/BestOnlineExamProctor/static/OuputAudios'
-# Capture
 cap = None
 
+# Directories
+PROFILE_DIR = "static/Profiles"
+VIDEO_OUTPUT_DIR = "static/OutputVideos"
+AUDIO_OUTPUT_DIR = "static/OutputAudios"
 
-#Database and Files Related
-# function to add data to JSON
+
+import shutil
+import subprocess
+import tempfile
+
+FFMPEG_BIN = "ffmpeg"  # assumes ffmpeg is on PATH
+
+def transcode_to_h264(mp4_path: str) -> str:
+    """
+    Re-mux/re-encode whatever OpenCV produced into H.264 (avc1) + faststart,
+    so browsers show correct duration & play reliably.
+    Returns the final path (same as input).
+    """
+    # write to a temp file in same dir, then replace atomically
+    dir_ = os.path.dirname(mp4_path)
+    base = os.path.basename(mp4_path)
+    temp_out = os.path.join(dir_, f".__tmp_{base}")
+
+    # re-encode to AVC baseline (browser safe), keep 10 fps, make it web-safe
+    cmd = [
+        FFMPEG_BIN, "-y",
+        "-i", mp4_path,
+        "-c:v", "libx264",
+        "-profile:v", "baseline",
+        "-pix_fmt", "yuv420p",
+        "-preset", "veryfast",
+        "-r", "10",
+        "-movflags", "+faststart",
+        "-an",
+        temp_out
+    ]
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode != 0:
+            print("⚠️ ffmpeg failed:", proc.stderr.decode(errors="ignore")[:4000])
+            return mp4_path
+        # replace original
+        os.replace(temp_out, mp4_path)
+        print(f"✅ Transcoded to H.264: {os.path.basename(mp4_path)}")
+    except FileNotFoundError:
+        print("⚠️ ffmpeg not found on PATH. Install it or set FFMPEG_BIN path.")
+    except Exception as e:
+        print("⚠️ ffmpeg error:", e)
+        try:
+            if os.path.exists(temp_out):
+                os.remove(temp_out)
+        except: pass
+    return mp4_path
+
+# -------------------- Utility Functions --------------------
+
 def write_json(new_data, filename='violation.json'):
-    with open(filename,'r+') as file:
-        # First we load existing data into a dict.
-        file_data = json.load(file)
-        # Join new_data with file_data inside emp_details
-        file_data.append(new_data)
-        # Sets file's current position at offset.
-        file.seek(0)
-        # convert back to json.
-        json.dump(file_data, file, indent = 4)
+    """Safely append new data to JSON with fallback if file empty."""
+    if not os.path.exists(filename):
+        with open(filename, 'w') as f:
+            json.dump([], f)
+    try:
+        with open(filename, 'r+') as file:
+            file_data = json.load(file)
+            if isinstance(new_data, dict) and "Link" not in new_data:
+                new_data["Link"] = ""
+            file_data.append(new_data)
+            file.seek(0)
+            json.dump(file_data, file, indent=4)
+    except Exception as e:
+        print(f"⚠️ Error writing to {filename}: {e}")
 
-#Function to move the files to the Output Folders
-def move_file_to_output_folder(file_name,folder_name='OutputVideos'):
-    # Get the current working directory (project folder)
+def move_file_to_output_folder(file_name, folder_name='OutputVideos'):
+    """Move temp video files into static output folders."""
     current_directory = os.getcwd()
-    # Define the paths for the source file and destination folder
     source_path = os.path.join(current_directory, file_name)
     destination_path = os.path.join(current_directory, 'static', folder_name, file_name)
     try:
-        # Use 'shutil.move' to move the file to the destination folder
         shutil.move(source_path, destination_path)
-        print('Your video is moved to'+folder_name)
+        print(f"✅ Moved {file_name} to {folder_name}")
     except FileNotFoundError:
-        print(f"Error: File '{file_name}' not found in the project folder.")
+        print(f"❌ File '{file_name}' not found.")
     except shutil.Error as e:
-        print(f"Error: Failed to move the file. {e}")
+        print(f"⚠️ Move failed: {e}")
 
-#Function to reduce video file's data rate to 100 kbps
-def reduceBitRate (input_file,output_file):
-   target_bitrate = "1000k"  # Set your desired target bitrate here
-   # Specify the full path to the FFmpeg executable
-   ffmpeg_path = "C:/Users/kaungmyat/Downloads/ffmpeg-2023-08-28-git-b5273c619d-essentials_build/ffmpeg-2023-08-28-git-b5273c619d-essentials_build/bin/ffmpeg.exe"  # Replace with the actual path to ffmpeg.exe on your system
-   # Run FFmpeg command to lower the bitrate
-   command = [
-      ffmpeg_path,
-      "-i", input_file,
-      "-b:v", target_bitrate,
-      "-c:v", "libx264",
-      "-c:a", "aac",
-      "-strict", "experimental",
-      "-b:a", "192k",
-      output_file
-   ]
-   subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-   print("Bitrate conversion completed.")
+def reduceBitRate(input_file, output_file):
+    """Compress video bitrate via ffmpeg."""
+    ffmpeg_path = "C:/ffmpeg/bin/ffmpeg.exe"  # 🔧 Adjust this path
+    command = [
+        ffmpeg_path, "-i", input_file,
+        "-b:v", "1000k",
+        "-c:v", "libx264",
+        "-c:a", "aac", "-b:a", "192k",
+        output_file
+    ]
+    subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    print(f"🎞️ Bitrate reduced for {input_file}")
 
-#Recordings related
-#Recording Function for Face Verification
-def faceDetectionRecording(img, text):
-    global start_time, end_time, recorded_durations, prev_state, flag, writer, width, height
-    print("Running FaceDetection Recording Function")
-    print(text)
-    if text != 'Verified Student appeared' and prev_state[0] == 'Verified Student appeared':
-        start_time[0] = time.time()
-        for _ in range(2):
-            writer[0].write(img)
-    elif text != 'Verified Student appeared' and str(text) == prev_state[0] and (time.time() - start_time[0]) > 3:
-        flag[0] = True
-        for _ in range(2):
-            writer[0].write(img)
-    elif text != 'Verified Student appeared' and str(text) == prev_state[0] and (time.time() - start_time[0]) <= 3:
-        flag[0] = False
-        for _ in range(2):
-            writer[0].write(img)
-    else:
-        if prev_state[0] != "Verified Student appeared":
-            writer[0].release()
-            end_time[0] = time.time()
-            duration = math.ceil((end_time[0] - start_time[0]) / 3)
-            outputVideo = 'FDViolation' + video[0]
-            FDViolation = {
-                "Name": prev_state[0],
-                "Time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time[0])),
-                "Duration": str(duration) + " seconds",
-                "Mark": math.floor(2 * duration),
-                "Link": outputVideo,
-                "RId": get_resultId()
-            }
-            if flag[0]:
-                recorded_durations.append(FDViolation)
-                write_json(FDViolation)
-                reduceBitRate(video[0], outputVideo)
-                move_file_to_output_folder(outputVideo)
-            os.remove(video[0])
-            print(recorded_durations)
-            video[0] = str(random.randint(1, 50000)) + ".mp4"
-            writer[0] = cv2.VideoWriter(video[0], cv2.VideoWriter_fourcc(*'mp4v'), 20, (width, height))
-            flag[0] = False
-    prev_state[0] = text
-
-#Recording Function for Head Movement Detection
-def Head_record_duration(text,img):
-    global start_time, end_time, recorded_durations, prev_state, flag,writer, width, height
-    print("Running HeadMovement Recording Function")
-    print(text)
-    if text != "Forward":
-        if str(text) != prev_state[1] and prev_state[1] == "Forward":
-            start_time[1] = time.time()
-            for _ in range(2):
-                writer[1].write(img)
-        elif str(text) != prev_state[1] and prev_state[1] != "Forward":
-            writer[1].release()
-            end_time[1] = time.time()
-            duration = math.ceil((end_time[1] - start_time[1])/7)
-            outputVideo = 'HeadViolation' + video[1]
-            HeadViolation = {
-                "Name": prev_state[1],
-                "Time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time[1])),
-                "Duration": str(duration) + " seconds",
-                "Mark": duration,
-                "Link": outputVideo,
-                "RId": get_resultId()
-            }
-            if flag[1]:
-                recorded_durations.append(HeadViolation)
-                write_json(HeadViolation)
-                reduceBitRate(video[1], outputVideo)
-                move_file_to_output_folder(outputVideo)
-            os.remove(video[1])
-            print(recorded_durations)
-            start_time[1] = time.time()
-            video[1] = str(random.randint(1, 50000)) + ".mp4"
-            writer[1] = cv2.VideoWriter(video[1], cv2.VideoWriter_fourcc(*'mp4v'), 20, (width,height))
-            flag[1] = False
-        elif str(text) == prev_state[1] and (time.time() - start_time[1]) > 3:
-            flag[1] = True
-            for _ in range(2):
-                writer[1].write(img)
-        elif str(text) == prev_state[1] and (time.time() - start_time[1]) <= 3:
-            flag[1] = False
-            for _ in range(2):
-                writer[1].write(img)
-        prev_state[1] = text
-    else:
-        if prev_state[1] != "Forward":
-            writer[1].release()
-            end_time[1] = time.time()
-            duration = math.ceil((end_time[1] - start_time[1])/7)
-            outputVideo = 'HeadViolation' + video[1]
-            HeadViolation = {
-                "Name": prev_state[1],
-                "Time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time[1])),
-                "Duration": str(duration) + " seconds",
-                "Mark": duration,
-                "Link": outputVideo,
-                "RId": get_resultId()
-            }
-            if flag[1]:
-                recorded_durations.append(HeadViolation)
-                write_json(HeadViolation)
-                reduceBitRate(video[1], outputVideo)
-                move_file_to_output_folder(outputVideo)
-            os.remove(video[1])
-            print(recorded_durations)
-            video[1] = str(random.randint(1, 50000)) + ".mp4"
-            writer[1] = cv2.VideoWriter(video[1], cv2.VideoWriter_fourcc(*'mp4v'), 20, (width,height))
-            flag[1] = False
-        prev_state[1] = text
-
-#Recording Function for More than one person Detection
-def MTOP_record_duration(text, img):
-    global start_time, end_time, recorded_durations, prev_state, flag, writer, width, height
-    print("Running MTOP Recording Function")
-    print(text)
-    if text != 'Only one person is detected' and prev_state[2] == 'Only one person is detected':
-        start_time[2] = time.time()
-        for _ in range(2):
-            writer[2].write(img)
-    elif text != 'Only one person is detected' and str(text) == prev_state[2] and (time.time() - start_time[2]) > 3:
-        flag[2] = True
-        for _ in range(2):
-            writer[2].write(img)
-    elif text != 'Only one person is detected' and str(text) == prev_state[2] and (time.time() - start_time[2]) <= 3:
-        flag[2] = False
-        for _ in range(2):
-            writer[2].write(img)
-    else:
-        if prev_state[2] != "Only one person is detected":
-            writer[2].release()
-            end_time[2] = time.time()
-            duration = math.ceil((end_time[2] - start_time[2])/3)
-            outputVideo = 'MTOPViolation' + video[2]
-            MTOPViolation = {
-                "Name": prev_state[2],
-                "Time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time[2])),
-                "Duration": str(duration) + " seconds",
-                "Mark": math.floor(1.5 * duration),
-                "Link": outputVideo,
-                "RId": get_resultId()
-            }
-            if flag[2]:
-                recorded_durations.append(MTOPViolation)
-                write_json(MTOPViolation)
-                reduceBitRate(video[2], outputVideo)
-                move_file_to_output_folder(outputVideo)
-            os.remove(video[2])
-            print(recorded_durations)
-            video[2] = str(random.randint(1, 50000)) + ".mp4"
-            writer[2] = cv2.VideoWriter(video[2], cv2.VideoWriter_fourcc(*'mp4v'), 20, (width,height))
-            flag[2] = False
-    prev_state[2] = text
-
-#Recording Function for Screen Detection
-def SD_record_duration(text, img):
-    global start_time, end_time, prev_state, flag, writer, width, height
-    print("Running SD Recording Function")
-    print(text)
-    if text != "Stay in the Test" and prev_state[3] == "Stay in the Test":
-        start_time[3] = time.time()
-        print(f"Start SD Recording, start time is {start_time[3]} and array is {start_time}")
-        for _ in range(2):
-            writer[3].write(img)
-    elif text != "Stay in the Test" and str(text) == prev_state[3] and (time.time() - start_time[3]) > 3:
-        flag[3] = True
-        for _ in range(2):
-            writer[3].write(img)
-    elif text != "Stay in the Test" and str(text) == prev_state[3] and (time.time() - start_time[3]) <= 3:
-        flag[3] = False
-        for _ in range(2):
-            writer[3].write(img)
-    else:
-        if prev_state[3] != "Stay in the Test":
-            writer[3].release()
-            end_time[3] = time.time()
-            duration = math.ceil((end_time[3] - start_time[3])/4)
-            outputVideo = 'SDViolation' + video[3]
-            SDViolation = {
-                "Name": prev_state[3],
-                "Time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time[3])),
-                "Duration": str(duration) + " seconds",
-                "Mark": (2 * duration),
-                "Link": outputVideo,
-                "RId": get_resultId()
-            }
-            if flag[3]:
-                recorded_durations.append(SDViolation)
-                write_json(SDViolation)
-                reduceBitRate(video[3], outputVideo)
-                move_file_to_output_folder(outputVideo)
-            os.remove(video[3])
-            print(recorded_durations)
-            video[3] = str(random.randint(1, 50000)) + ".mp4"
-            writer[3] = cv2.VideoWriter(video[3], cv2.VideoWriter_fourcc(*'mp4v'), 15, (1920, 1080))
-            flag[3] = False
-    prev_state[3] = text
-
-# Function to capture the screen using PyAutoGUI and return the frame as a NumPy array
 def capture_screen():
+    """Capture current screen frame."""
     screenshot = pyautogui.screenshot()
     frame = np.array(screenshot)
-    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-    return frame
+    return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
-#Recording Function for Electronic Devices Detection
-def EDD_record_duration(text, img):
-    global start_time, end_time, prev_state, flag, writer,recorded_Images,EDD_Duration, video, EDWidth, EDHeight
-    print(text)
-    if text == "Electronic Device Detected" and prev_state[4] == "No Electronic Device Detected":
-        start_time[4] = time.time()
-        for _ in range(2):
-            writer[4].write(img)
-    elif text == "Electronic Device Detected" and str(text) == prev_state[4] and (time.time() - start_time[4]) > 0:
-        flag[4] = True
-        for _ in range(2):
-            writer[4].write(img)
-    elif text == "Electronic Device Detected" and str(text) == prev_state[4] and (time.time() - start_time[4]) <= 0:
-        flag[4] = False
-        for _ in range(2):
-            writer[4].write(img)
-    else:
-        if prev_state[4] == "Electronic Device Detected":
-            writer[4].release()
-            end_time[4] = time.time()
-            duration = math.ceil((end_time[4] - start_time[4])/10)
-            outputVideo = 'EDViolation' + video[4]
-            EDViolation = {
-                "Name": prev_state[4],
-                "Time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time[4])),
-                "Duration": str(duration) + " seconds",
-                "Mark": math.floor(1.5 * duration),
-                "Link": outputVideo,
-                "RId": get_resultId()
+def get_resultId():
+    """Return next available Result ID."""
+    if not os.path.exists('result.json'):
+        with open('result.json', 'w') as f: json.dump([], f)
+    with open('result.json', 'r+') as file:
+        data = json.load(file)
+        if not data: return 1
+        data.sort(key=lambda x: x.get("Id", 0))
+        return data[-1]["Id"] + 1
+
+def get_TrustScore(Rid):
+    """Compute Trust Score by summing violation marks."""
+    if not os.path.exists('violation.json'): return 0
+    with open('violation.json', 'r') as file:
+        data = json.load(file)
+        filtered = [v for v in data if v.get("RId") == Rid]
+        return sum(v.get("Mark", 0) for v in filtered)
+# -------------------- Keyboard Shortcut Detection --------------------
+import keyboard
+import time
+
+shorcuts = []  # already defined at top
+
+def shortcut_handler(event):
+    """Detect and record restricted keyboard shortcuts during the exam."""
+    import utils  # safe self-import inside handler
+    if event.event_type != keyboard.KEY_DOWN:
+        return
+
+    shortcut = ""
+    # Common prohibited combinations
+    try:
+        if keyboard.is_pressed("ctrl") and keyboard.is_pressed("c"):
+            shortcut = "Ctrl+C"
+        elif keyboard.is_pressed("ctrl") and keyboard.is_pressed("v"):
+            shortcut = "Ctrl+V"
+        elif keyboard.is_pressed("ctrl") and keyboard.is_pressed("a"):
+            shortcut = "Ctrl+A"
+        elif keyboard.is_pressed("ctrl") and keyboard.is_pressed("x"):
+            shortcut = "Ctrl+X"
+        elif keyboard.is_pressed("alt") and keyboard.is_pressed("tab"):
+            shortcut = "Alt+Tab"
+        elif keyboard.is_pressed("alt") and keyboard.is_pressed("shift") and keyboard.is_pressed("tab"):
+            shortcut = "Alt+Shift+Tab"
+        elif keyboard.is_pressed("win") and keyboard.is_pressed("tab"):
+            shortcut = "Win+Tab"
+        elif keyboard.is_pressed("ctrl") and keyboard.is_pressed("esc"):
+            shortcut = "Ctrl+Esc"
+        elif keyboard.is_pressed("ctrl") and keyboard.is_pressed("t"):
+            shortcut = "Ctrl+T"
+        elif keyboard.is_pressed("ctrl") and keyboard.is_pressed("w"):
+            shortcut = "Ctrl+W"
+        elif keyboard.is_pressed("ctrl") and keyboard.is_pressed("z"):
+            shortcut = "Ctrl+Z"
+        elif keyboard.is_pressed("print_screen"):
+            shortcut = "PrtSc"
+        elif keyboard.is_pressed("f1"):
+            shortcut = "F1"
+        elif keyboard.is_pressed("f2"):
+            shortcut = "F2"
+        elif keyboard.is_pressed("f3"):
+            shortcut = "F3"
+        elif keyboard.is_pressed("win"):
+            shortcut = "Windows Key"
+        elif keyboard.is_pressed("ctrl") and keyboard.is_pressed("alt") and keyboard.is_pressed("del"):
+            shortcut = "Ctrl+Alt+Del"
+    except:
+        # Ignore transient key errors
+        return
+
+    if shortcut and shortcut not in shorcuts:
+        shorcuts.append(shortcut)
+        print(f"⚠️ Detected prohibited shortcut: {shortcut}")
+
+        # ✅ Log this violation immediately to violation.json
+        try:
+            violation_entry = {
+                "Name": f"Prohibited Shortcut ({shortcut}) detected",
+                "Time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "Duration": "Instant",
+                "Mark": 1.5,
+                "Link": "",
+                "RId": utils.get_resultId()
             }
-            if flag[4]:
-                write_json(EDViolation)
-                reduceBitRate(video[4], outputVideo)
-                move_file_to_output_folder(outputVideo)
-            os.remove(video[4])
-            video[4]= str(random.randint(1, 50000)) + ".mp4"
-            writer[4] = cv2.VideoWriter(video[4], cv2.VideoWriter_fourcc(*'mp4v'), 10 , (EDWidth,EDHeight))
-            flag[4] = False
-    prev_state[4] = text
+            utils.write_json(violation_entry)
+        except Exception as e:
+            print(f"⚠️ Could not write shortcut violation: {e}")
 
-#system Related
-def deleteTrashVideos():
-    global video
-    video_folder = 'C:/Users/kaungmyat/PycharmProjects/BestOnlineExamProctor'
-    # Iterate through files in the folder
-    for filename in os.listdir(video_folder):
-        if filename.lower().endswith('.mp4'):
-            try:
-                os.remove(filename)
-            except OSError:
-                pass
 
-#Models Related
-#One: Face Detection Function
-def face_confidence(face_distance, face_match_threshold=0.6):
-    range = (1.0 - face_match_threshold)
-    linear_val = (1.0 - face_distance) / (range * 2.0)
+# -------------------- Face Recognition --------------------
 
-    if face_distance > face_match_threshold:
+def face_confidence(face_distance, threshold=0.6):
+    range_val = (1.0 - threshold)
+    linear_val = (1.0 - face_distance) / (range_val * 2.0)
+    if face_distance > threshold:
         return str(round(linear_val * 100, 2)) + '%'
-    else:
-        value = (linear_val + ((1.0 - linear_val) * math.pow((linear_val - 0.5) * 2, 0.2))) * 100
-        return str(round(value, 2)) + '%'
+    value = (linear_val + ((1.0 - linear_val) * ((linear_val - 0.5) * 2) ** 0.2)) * 100
+    return str(round(value, 2)) + '%'
 
 class FaceRecognition:
-    face_locations = []
-    face_encodings = []
-    face_names = []
-    known_face_encodings = []
-    known_face_names = []
-    process_current_frame = True
-
     def __init__(self):
+        self.known_face_encodings = []
+        self.known_face_names = []
+        self.process_current_frame = True
         self.encode_faces()
 
     def encode_faces(self):
-        for image in os.listdir('static/Profiles'):
-            face_image = face_recognition.load_image_file(f"static/Profiles/{image}")
-            face_encoding = face_recognition.face_encodings(face_image)[0]
-
-            self.known_face_encodings.append(face_encoding)
-            self.known_face_names.append(image)
-        print(self.known_face_names)
+        """Encode known faces from static/Profiles."""
+        if not os.path.exists(PROFILE_DIR):
+            os.makedirs(PROFILE_DIR)
+        for image in os.listdir(PROFILE_DIR):
+            path = os.path.join(PROFILE_DIR, image)
+            try:
+                face_image = face_recognition.load_image_file(path)
+                encodings = face_recognition.face_encodings(face_image)
+                if len(encodings) == 0:
+                    print(f"⚠️ No face found in {image}, skipping.")
+                    continue
+                self.known_face_encodings.append(encodings[0])
+                self.known_face_names.append(image)
+            except Exception as e:
+                print(f"❌ Error encoding {image}: {e}")
+        print(f"✅ Encoded faces: {self.known_face_names}")
 
     def run_recognition(self):
-        global Globalflag
-        #video_capture = cv2.VideoCapture(0)
-        print(f'Face Detection Flag is {Globalflag}')
-        text = ""
-        if not cap.isOpened():
-            sys.exit('Video source not found...')
+        """Continuously verify student via webcam."""
+        global Globalflag, cap
+        if cap is None:
+            cap = cv2.VideoCapture(0)
+        print(f"🎥 Face Verification started | Globalflag={Globalflag}")
 
         while Globalflag:
             ret, frame = cap.read()
+            if not ret:
+                print("⚠️ Empty frame, skipping...")
+                time.sleep(0.2)
+                continue
+
             text = "Verified Student disappeared"
-            print("Running Face Verification Function")
-            # Only process every other frame of video to save time
+
             if self.process_current_frame:
-                # Resize frame of video to 1/4 size for faster face recognition processing
                 small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-
-                # Convert the image from BGR color (which OpenCV uses) to RGB color (which face_recognition uses)
-                #rgb_small_frame = small_frame[:, :, ::-1]
                 rgb_small_frame = np.ascontiguousarray(small_frame[:, :, ::-1])
+                face_locations = face_recognition.face_locations(rgb_small_frame)
+                encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
 
-                # Find all the faces and face encodings in the current frame of video
-                self.face_locations = face_recognition.face_locations(rgb_small_frame)
-                self.face_encodings = face_recognition.face_encodings(rgb_small_frame, self.face_locations)
+                for face_encoding in encodings:
+                    matches = face_recognition.compare_faces(
+                        self.known_face_encodings, face_encoding, tolerance=0.55
+                    )
+                    distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
+                    best_match = np.argmin(distances) if len(distances) > 0 else None
 
-                self.face_names = []
-                for face_encoding in self.face_encodings:
-                    # See if the face is a match for the known face(s)
-                    matches = face_recognition.compare_faces(self.known_face_encodings, face_encoding)
-                    name = "Unknown"
-                    confidence = '???'
-
-                    # Calculate the shortest distance to face
-                    face_distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
-
-                    best_match_index = np.argmin(face_distances)
-                    if matches[best_match_index]:
-                        tempname = str(self.known_face_names[best_match_index]).split('_')[0]
-                        tempconfidence = face_confidence(face_distances[best_match_index])
-                        if tempname == Student_Name and float(tempconfidence[:-1]) >= 84:
-                            name = tempname
-                            confidence = tempconfidence
-
-                    self.face_names.append(f'{name} ({confidence})')
+                    if best_match is not None and matches[best_match]:
+                        name = str(self.known_face_names[best_match]).split('_')[0]
+                        confidence = face_confidence(distances[best_match])
+                        if name == Student_Name and float(confidence[:-1]) >= 80:
+                            text = "Verified Student appeared"
 
             self.process_current_frame = not self.process_current_frame
+            print(f"🎯 {text}")
+            time.sleep(0.2)
 
-            # Display the results
-            for (top, right, bottom, left), name in zip(self.face_locations, self.face_names):
-                # Scale back up face locations since the frame we detected in was scaled to 1/4 size
-                top *= 4
-                right *= 4
-                bottom *= 4
-                left *= 4
-                if "Unknown" not in name:
-                    # Create the frame with the name
-                    text = "Verified Student appeared"
-                cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 255), 2)
-                cv2.rectangle(frame, (left, bottom - 35), (right, bottom), (0, 0, 255), cv2.FILLED)
-                cv2.putText(frame, name, (left + 6, bottom - 6), cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
+        if cap:
+            cap.release()
+            print("✅ Camera released after verification stop")
 
-            # Display the resulting image
-           # cv2.imshow('Face Recognition', frame)
-            print(text)
-            faceDetectionRecording(frame, text)
-            # Hit 'q' on the keyboard to quit!
+# -------------------- Audio Recorder --------------------
 
-#Second: Head Movement Detection Function
-def headMovmentDetection(image, face_mesh):
-    print("Running HeadMovement Function")
-    # Flip the image horizontally for a later selfie-view display
-    # Also convert the color space from BGR to RGB
-    image = cv2.cvtColor(cv2.flip(image, 1), cv2.COLOR_BGR2RGB)
-
-    # To improve performance
-    image.flags.writeable = False
-
-    # Get the result
-    results = face_mesh.process(image)
-
-    # To improve performance
-    image.flags.writeable = True
-
-    # Convert the color space from RGB to BGR
-    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-
-    img_h, img_w, img_c = image.shape
-    face_3d = []
-    face_2d = []
-
-    if results.multi_face_landmarks:
-        for face_landmarks in results.multi_face_landmarks:
-            for idx, lm in enumerate(face_landmarks.landmark):
-                if idx == 33 or idx == 263 or idx == 1 or idx == 61 or idx == 291 or idx == 199:
-                    if idx == 1:
-                        nose_2d = (lm.x * img_w, lm.y * img_h)
-                        nose_3d = (lm.x * img_w, lm.y * img_h, lm.z * 8000)
-
-                    x, y = int(lm.x * img_w), int(lm.y * img_h)
-
-                    # Get the 2D Coordinates
-                    face_2d.append([x, y])
-
-                    # Get the 3D Coordinates
-                    face_3d.append([x, y, lm.z])
-
-                    # Convert it to the NumPy array
-            face_2d = np.array(face_2d, dtype=np.float64)
-
-            # Convert it to the NumPy array
-            face_3d = np.array(face_3d, dtype=np.float64)
-
-            # The camera matrix
-            focal_length = 1 * img_w
-
-            cam_matrix = np.array([[focal_length, 0, img_h / 2],
-                                   [0, focal_length, img_w / 2],
-                                   [0, 0, 1]])
-
-            # The Distance Matrix
-            dist_matrix = np.zeros((4, 1), dtype=np.float64)
-
-            # Solve PnP
-            success, rot_vec, trans_vec = cv2.solvePnP(face_3d, face_2d, cam_matrix, dist_matrix)
-
-            # Get rotational matrix
-            rmat, jac = cv2.Rodrigues(rot_vec)
-
-            # Get angles
-            angles, mtxR, mtxQ, Qx, Qy, Qz = cv2.RQDecomp3x3(rmat)
-
-            # Get the y rotation degree
-            x = angles[0] * 360
-            y = angles[1] * 360
-            # print(y)
-            textHead = ''
-            # See where the user's head tilting
-            if y < -10:
-                textHead = "Looking Left"
-            elif y > 15:
-                textHead = "Looking Right"
-            elif x < -8:
-                textHead = "Looking Down"
-            elif x > 15:
-                textHead = "Looking Up"
-            else:
-                textHead = "Forward"
-            # Add the text on the image
-            cv2.putText(image, textHead, (20, 20), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-            Head_record_duration(textHead, image)
-
-
-#Third : More than one person Detection Function
-def MTOP_Detection(img):
-    print("Running MTOP Function")
-    imgRGB = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    results = faceDetection.process(imgRGB)
-    textMTOP = ''
-    if results.detections:
-        for id, detection in enumerate(results.detections):
-            bboxC = detection.location_data.relative_bounding_box
-            ih, iw, ic = img.shape
-            bbox = int(bboxC.xmin * iw), int(bboxC.ymin * ih), \
-                int(bboxC.width * iw), int(bboxC.height * ih)
-            # Drawing the recantangle
-            cv2.rectangle(img, bbox, (255, 0, 255), 2)
-            # cv2.putText(img, f'{int(detection.score[0] * 100)}%', (bbox[0], bbox[1] - 20), cv2.FONT_HERSHEY_PLAIN, 3, (255, 255, 255), 10)
-        if id > 0:
-            textMTOP = "More than one person is detected."
-        else:
-            textMTOP = "Only one person is detected"
-    else:
-        textMTOP="Only one person is detected"
-    MTOP_record_duration(textMTOP, img)
-    print(textMTOP)
-
-#Fourth : Screen Detection Function ( Key-words and Screens)
-def shortcut_handler(event):
-    if event.event_type == keyboard.KEY_DOWN:
-        shortcut = ''
-        # Check for Ctrl+C
-        if keyboard.is_pressed('ctrl') and keyboard.is_pressed('c'):
-            shortcut += 'Ctrl+C'
-            print("Ctrl+C shortcut detected!")
-        # Check for Ctrl+V
-        elif keyboard.is_pressed('ctrl') and keyboard.is_pressed('v'):
-            shortcut += 'Ctrl+V'
-            print("Ctrl+V shortcut detected!")
-        # Check for Ctrl+A
-        elif keyboard.is_pressed('ctrl') and keyboard.is_pressed('a'):
-            shortcut += 'Ctrl+A'
-            print("Ctrl+A shortcut detected!")
-        # Check for Ctrl+X
-        elif keyboard.is_pressed('ctrl') and keyboard.is_pressed('x'):
-            shortcut += 'Ctrl+X'
-            print("Ctrl+X shortcut detected!")
-        # Check for Alt+Shift+Tab
-        elif keyboard.is_pressed('alt') and keyboard.is_pressed('shift') and keyboard.is_pressed('tab'):
-            shortcut += 'Alt+Shift+Tab'
-            print("Alt+Shift+Tab shortcut detected!")
-        # Check for Win+Tab
-        elif keyboard.is_pressed('win') and keyboard.is_pressed('tab'):
-            shortcut += 'Win+Tab'
-            print("Win+Tab shortcut detected!")
-        # Check for Alt+Esc
-        elif keyboard.is_pressed('alt') and keyboard.is_pressed('esc'):
-            shortcut += 'Alt+Esc'
-            print("Alt+Esc shortcut detected!")
-        # Check for Alt+Tab
-        elif keyboard.is_pressed('alt') and keyboard.is_pressed('tab'):
-            shortcut += 'Alt+Tab'
-            print("Alt+Tab shortcut detected!")
-        # Check for Ctrl+Esc
-        elif keyboard.is_pressed('ctrl') and keyboard.is_pressed('esc'):
-            shortcut += 'Ctrl+Esc'
-            print("Ctrl+Esc shortcut detected!")
-        # Check for Function Keys F1
-        elif keyboard.is_pressed('f1'):
-            shortcut += 'F1'
-            print("F1 shortcut detected")
-        # Check for Function Keys F2
-        elif keyboard.is_pressed('f2'):
-            shortcut += 'F2'
-            print("F2 shortcut detected!")
-        # Check for Function Keys F3
-        elif keyboard.is_pressed('f3'):
-            shortcut += 'F3'
-            print("F3 shortcut detected!")
-        # Check for Window Key
-        elif keyboard.is_pressed('win'):
-            shortcut += 'Window'
-            print("Window shortcut detected!")
-        # Check for Ctrl+Alt+Del
-        elif keyboard.is_pressed('ctrl') and keyboard.is_pressed('alt') and keyboard.is_pressed('del'):
-            shortcut += 'Ctrl+Alt+Del'
-            print("Ctrl+Alt+Del shortcut detected!")
-        # Check for Prt Scn
-        elif keyboard.is_pressed('print_screen'):
-            shortcut += 'Prt Scn'
-            print("Prt Scn shortcut detected!")
-        # Check for Ctrl+T
-        elif keyboard.is_pressed('ctrl') and keyboard.is_pressed('t'):
-            shortcut += 'Ctrl+T'
-            print("Ctrl+T shortcut detected!")
-        # Check for Ctrl+W
-        elif keyboard.is_pressed('ctrl') and keyboard.is_pressed('w'):
-            shortcut += 'Ctrl+W'
-            print("Ctrl+W shortcut detected!")
-        # Check for Ctrl+Z
-        elif keyboard.is_pressed('ctrl') and keyboard.is_pressed('z'):
-            shortcut += 'Ctrl+Z'
-            print("Ctrl+Z shortcut detected!")
-        shorcuts.append(shortcut) if shortcut != "" else None
-
-def screenDetection():
-    global active_window, active_window_title, exam_window_title
-    textScreen = ""
-    # Get the current active window
-    new_active_window = gw.getActiveWindow()
-    frame = capture_screen()
-
-    # Check if the active window has changed
-    if new_active_window is not None and new_active_window.title != exam_window_title:
-        # Check if the active window is a browser or a tab
-        if new_active_window.title != active_window_title:
-            print("Moved to Another Window: ", new_active_window.title)
-            # Update the active window and its title
-            active_window = new_active_window
-            active_window_title = active_window.title
-        textScreen = "Move away from the Test"
-    else:
-        if new_active_window is not None:
-            textScreen = "Stay in the Test"
-    SD_record_duration(textScreen, frame)
-    print(textScreen)
-
-#Fifth : Electronic Devices Detection Function
-def electronicDevicesDetection(frame):
-    global model, EDFlag
-    # Predict on image
-    detect_params = model.predict(source=[frame], conf=0.45, save=False)
-    # Convert tensor array to numpy
-    DP = detect_params[0].numpy()
-    for result in detect_params:  # iterate results
-        boxes = result.boxes.cpu().numpy()  # get boxes on cpu in numpy
-        for box in boxes:  # iterate boxes
-            r = box.xyxy[0].astype(int)  # get corner points as int
-            detected_obj = result.names[int(box.cls[0])]
-            if (detected_obj == 'cell phone' or detected_obj == 'remote' or detected_obj == 'laptop' or detected_obj == 'laptop,book'): EDFlag = True
-    textED = ''
-    # Display the resulting frame
-    if EDFlag:
-        textED = 'Electronic Device Detected'
-    else:
-        textED = "No Electronic Device Detected"
-    EDD_record_duration(textED, frame)
-    print(textED)
-    EDFlag = False
-
-#Sixth Function : Voice Detection
 class Recorder:
-    @staticmethod
-    def rms(frame):
-        count = len(frame) / SHORT_WIDTH
-        format = "%dh" % (count)
-        shorts = struct.unpack(format, frame)
-
-        sum_squares = 0.0
-        for sample in shorts:
-            n = sample * SHORT_NORMALIZE
-            sum_squares += n * n
-        rms = math.pow(sum_squares / count, 0.5)
-
-        return rms * 1000
-
     def __init__(self):
         self.p = pyaudio.PyAudio()
-        self.stream = self.p.open(format=FORMAT,
-                                  channels=CHANNELS,
-                                  rate=RATE,
-                                  input=True,
-                                  output=True,
-                                  frames_per_buffer=CHUNK)
-        self.time = time.time()
+        self.stream = self.p.open(format=pyaudio.paInt16, channels=1, rate=16000,
+                                  input=True, output=False, frames_per_buffer=1024)
+        self.timeout = 0
         self.quiet = []
         self.quiet_idx = -1
-        self.timeout = 0
 
-    def record(self):
-        global Globalflag
-        print('')
-        print(f'Voice Flag is {Globalflag}')
-        sound = []
-        start = time.time()
-        begin_time = None
-        while Globalflag:
-            data = self.stream.read(CHUNK)
-            rms_val = self.rms(data)
-            if self.inSound(data):
-                sound.append(data)
-                if begin_time == None:
-                    begin_time = datetime.datetime.now()
-            else:
-                if len(sound) > 0:
-                    duration=math.floor((datetime.datetime.now()-begin_time).total_seconds())
-                    self.write(sound, begin_time, duration)
-                    sound.clear()
-                    begin_time = None
-                else:
-                    self.queueQuiet(data)
-
-            curr = time.time()
-            secs = int(curr - start)
-            tout = 0 if self.timeout == 0 else int(self.timeout - curr)
-            label = 'Listening' if self.timeout == 0 else 'Recording'
-            print('[+] %s: Level=[%4.2f] Secs=[%d] Timeout=[%d]' % (label, rms_val, secs, tout), end='\r')
-
-    # quiet is a circular buffer of size cushion
-    def queueQuiet(self, data):
-        self.quiet_idx += 1
-        # start over again on overflow
-        if self.quiet_idx == CUSHION_FRAMES:
-            self.quiet_idx = 0
-
-        # fill up the queue
-        if len(self.quiet) < CUSHION_FRAMES:
-            self.quiet.append(data)
-        # replace the element on the index in a cicular loop like this 0 -> 1 -> 2 -> 3 -> 0 and so on...
-        else:
-            self.quiet[self.quiet_idx] = data
-
-    def dequeueQuiet(self, sound):
-        if len(self.quiet) == 0:
-            return sound
-
-        ret = []
-
-        if len(self.quiet) < CUSHION_FRAMES:
-            ret.append(self.quiet)
-            ret.extend(sound)
-        else:
-            ret.extend(self.quiet[self.quiet_idx + 1:])
-            ret.extend(self.quiet[:self.quiet_idx + 1])
-            ret.extend(sound)
-
-        return ret
+    def rms(self, frame):
+        count = len(frame) / 2
+        fmt = "%dh" % count
+        shorts = struct.unpack(fmt, frame)
+        sum_sq = sum(sample * sample for sample in shorts)
+        return (sum_sq / count) ** 0.5 / 32768 * 1000
 
     def inSound(self, data):
-        rms = self.rms(data)
+        rms_val = self.rms(data)
         curr = time.time()
-
-        if rms > TRIGGER_RMS:
-            self.timeout = curr + TIMEOUT_SECS
+        if rms_val > 10:
+            self.timeout = curr + 3
             return True
-
         if curr < self.timeout:
             return True
-
         self.timeout = 0
         return False
 
-    def write(self, sound, begin_time, duration):
-        # insert the pre-sound quiet frames into sound
-        sound = self.dequeueQuiet(sound)
+    def record(self):
+        """Continuously record sounds when detected."""
+        global Globalflag
+        print("🎙️ Voice Recorder started")
 
-        # sound ends with TIMEOUT_FRAMES of quiet
-        # remove all but CUSHION_FRAMES
-        keep_frames = len(sound) - TIMEOUT_FRAMES + CUSHION_FRAMES
-        recording = b''.join(sound[0:keep_frames])
-        filename = str(random.randint(1,50000))+"VoiceViolation"
-        pathname = os.path.join(f_name_directory, '{}.wav'.format(filename))
-        wf = wave.open(pathname, 'wb')
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(self.p.get_sample_size(FORMAT))
-        wf.setframerate(RATE)
-        wf.writeframes(recording)
-        wf.close()
-        voiceViolation = {
-            "Name": "Common Noise is detected.",
-            "Time": begin_time.strftime("%Y-%m-%d %H:%M:%S"),
-            "Duration": str(duration) + " seconds",
-            "Mark": duration,
-            "Link": '{}.wav'.format(filename),
-            "RId": get_resultId()
-        }
-        write_json(voiceViolation)
-        print('[+] Saved: {}'.format(pathname))
+        frames = []
+        while Globalflag:
+            try:
+                data = self.stream.read(1024, exception_on_overflow=False)
+                if self.inSound(data):
+                    frames.append(data)
+                    # keep capturing until sound stops
+                    if len(frames) >= 50:  # ~3 seconds
+                        self.save_audio(frames)
+                        frames = []
+                else:
+                    if frames:
+                        self.save_audio(frames)
+                        frames = []
+            except Exception as e:
+                print(f"⚠️ Audio read error: {e}")
+
+        if frames:
+            self.save_audio(frames)
+
+        self.stream.stop_stream()
+        self.stream.close()
+        self.p.terminate()
+        print("🎙️ Voice Recorder stopped")
+
+    def save_audio(self, frames):
+        filename = f"{random.randint(1000,9999)}VoiceViolation.wav"
+        filepath = os.path.join(AUDIO_OUTPUT_DIR, filename)
+        try:
+            if not os.path.exists(AUDIO_OUTPUT_DIR):
+                os.makedirs(AUDIO_OUTPUT_DIR)
+            with wave.open(filepath, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(self.p.get_sample_size(pyaudio.paInt16))
+                wf.setframerate(16000)
+                wf.writeframes(b''.join(frames))
+            violation = {
+                "Name": "Voice detected during exam",
+                "Time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "Duration": "few secs",
+                "Mark": 1,
+                "Link": filename,
+                "RId": get_resultId()
+            }
+            write_json(violation)
+            print(f"💾 Saved voice violation: {filename}")
+        except Exception as e:
+            print(f"⚠️ Error saving audio: {e}")
+
+# -------------------- Global Instances --------------------
+
+
+# -------------------- Background Detection Threads --------------------
+
+# -------------------- Updated Proctoring Detection Threads --------------------
+def save_video_clip(frame):
+    """Save ~3s clip via OpenCV then transcode to H.264 for browser playback."""
+    global cap
+    filename = f"{random.randint(1000,9999)}Violation.mp4"
+    filepath = os.path.join(VIDEO_OUTPUT_DIR, filename)
+    os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True)
+
+    # WARNING: OpenCV mp4v is not browser friendly, but we will transcode after.
+    out = cv2.VideoWriter(
+        filepath,
+        cv2.VideoWriter_fourcc(*'mp4v'),
+        10,
+        (frame.shape[1], frame.shape[0])
+    )
+    start = time.time()
+    while time.time() - start < 3 and cap is not None and cap.isOpened():
+        ok, fr = cap.read()
+        if not ok: break
+        out.write(fr)
+    out.release()
+    print(f"🎞️ Saved raw clip (mp4v): {filename}")
+
+    # 🔁 Make it web-friendly (avc1 + faststart)
+    transcode_to_h264(filepath)
+    return filename
+
+
+# ======================================================
+#  HIGH-VISIBILITY DEBUG / DIAGNOSTIC LOGGING
+# ======================================================
+
+
+def log_event(level, msg):
+    """Rich timestamped logger with level tags."""
+    print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [{level}] {msg}")
+
+
+import traceback
 
 def cheat_Detection1():
+    """Head movement detection with fine-grained logs and safe shutdown."""
     deleteTrashVideos()
     global Globalflag
-    mp_face_mesh = mp.solutions.face_mesh
-    face_mesh = mp_face_mesh.FaceMesh(min_detection_confidence=0.5, min_tracking_confidence=0.5)
-    print(f'CD1 Flag is {Globalflag}')
-    while Globalflag:
-        success, image = cap.read()
-        headMovmentDetection(image, face_mesh)
-    if Globalflag:
-        cap.release()
-    deleteTrashVideos()
+    log_event("INFO", "🎯 [CD1] Head Movement Detection INITIATED")
+
+    cap_local = cv2.VideoCapture(0)
+    if not cap_local.isOpened():
+        log_event("ERROR", "Camera failed to open in CD1. Thread aborting.")
+        return
+
+    try:
+        mp_face_mesh = mp.solutions.face_mesh
+        face_mesh = mp_face_mesh.FaceMesh(min_detection_confidence=0.3,
+                                          min_tracking_confidence=0.3)
+        log_event("INFO", "✅ Mediapipe FaceMesh initialized successfully.")
+    except Exception as e:
+        log_event("ERROR", f"Failed to init Mediapipe FaceMesh: {e}")
+        traceback.print_exc()
+        cap_local.release()
+        return
+
+    prev_state, last_logged = None, 0
+
+    while True:
+        if not Globalflag:
+            log_event("INFO", "[CD1] Globalflag=False → stopping detection thread.")
+            break
+
+        ok, frame = cap_local.read()
+        if not ok or frame is None:
+            log_event("WARN", "CD1: No frame read from camera.")
+            time.sleep(0.2)
+            continue
+
+        try:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            res = face_mesh.process(rgb)
+
+            if not res.multi_face_landmarks:
+                log_event("DEBUG", "CD1: No face landmarks found this frame.")
+                continue
+
+            for lm in res.multi_face_landmarks:
+                nose = lm.landmark[1].x
+                state = "center"
+                if nose < 0.4: state = "left"
+                elif nose > 0.6: state = "right"
+
+                if prev_state and state != prev_state and time.time() - last_logged > 5:
+                    log_event("ALERT", f"Head moved {prev_state} → {state}")
+                    try:
+                        name = save_video_clip(frame)
+                        write_json({
+                            "Name": f"Head Movement ({prev_state}->{state})",
+                            "Time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "Duration": "3 sec",
+                            "Mark": 2,
+                            "Link": name,
+                            "RId": get_resultId()
+                        })
+                        log_event("INFO", f"Head movement proof saved: {name}")
+                    except Exception as e:
+                        log_event("ERROR", f"Failed to save proof clip: {e}")
+                        traceback.print_exc()
+                    last_logged = time.time()
+                prev_state = state
+
+        except Exception as e:
+            log_event("ERROR", f"CD1 loop error: {e}")
+            traceback.print_exc()
+
+    try:
+        cap_local.release()
+        log_event("INFO", "[CD1] Camera released successfully.")
+    except Exception as e:
+        log_event("ERROR", f"[CD1] Failed to release camera: {e}")
+
+    log_event("INFO", "🛑 [CD1] Head Movement Detection Stopped.")
+
 
 def cheat_Detection2():
-    global Globalflag, shorcuts
-    print(f'CD2 Flag is {Globalflag}')
-
+    """Multi-face + YOLO object detection with pinpoint logs and safe shutdown."""
     deleteTrashVideos()
-    while Globalflag:
-        success, image = cap.read()
-        image1 = image
-        image2 = image
-        MTOP_Detection(image1)
-        screenDetection()
-    deleteTrashVideos()
-    if Globalflag:
-        cap.release()
+    global Globalflag
+    log_event("INFO", "🎯 [CD2] Multi-Face/Object Detection INITIATED")
 
-#Query Related
-#Function to give the next resut id
-def get_resultId():
-    with open('result.json','r+') as file:
-        # First we load existing data into a dict.
-        file_data = json.load(file)
-        #sort json by ID
-        file_data.sort(key=lambda x: x["Id"])
-        return file_data[-1]['Id']+1
+    cap_local = cv2.VideoCapture(0)
+    if not cap_local.isOpened():
+        log_event("ERROR", "Camera failed to open in CD2. Thread aborting.")
+        return
 
-#Function to give the trust score
-def get_TrustScore(Rid):
-    with open('violation.json', 'r+') as file:
-        # First we load existing data into a dict.
-        file_data = json.load(file)
-        filtered_data = [item for item in file_data if item["RId"] == Rid]
-        total_mark = sum(item["Mark"] for item in filtered_data)
-        return total_mark
+    # Try loading YOLO
+    try:
+        model = YOLO("yolov8n.pt")
+        log_event("INFO", f"✅ YOLO model loaded successfully with {len(model.names)} classes.")
+    except Exception as e:
+        log_event("ERROR", f"YOLO load failed: {e}")
+        traceback.print_exc()
+        model = None
 
-#Function to give all results
+    cascade = cv2.CascadeClassifier('Haarcascades/haarcascade_frontalface_default.xml')
+    if cascade.empty():
+        log_event("ERROR", "Haarcascade XML not found or invalid!")
+
+    last_face, last_obj = 0, 0
+
+    while True:
+        if not Globalflag:
+            log_event("INFO", "[CD2] Globalflag=False → stopping detection thread.")
+            break
+
+        ok, frame = cap_local.read()
+        if not ok or frame is None:
+            log_event("WARN", "CD2: Empty camera frame.")
+            time.sleep(0.1)
+            continue
+
+        # --- Multi-face detection ---
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = cascade.detectMultiScale(gray, 1.1, 4)
+            log_event("DEBUG", f"[CD2] Faces detected={len(faces)}")
+
+            if len(faces) > 1 and time.time() - last_face > 5:
+                log_event("ALERT", f"[CD2] Multiple faces ({len(faces)}) detected.")
+                clip = save_video_clip(frame)
+                write_json({
+                    "Name": f"Multiple Faces ({len(faces)})",
+                    "Time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "Duration": "3 sec",
+                    "Mark": 3,
+                    "Link": clip,
+                    "RId": get_resultId()
+                })
+                log_event("INFO", f"[CD2] Multiple face proof saved: {clip}")
+                last_face = time.time()
+        except Exception as e:
+            log_event("ERROR", f"[CD2] Face cascade error: {e}")
+            traceback.print_exc()
+
+        # --- YOLO object detection ---
+        if model:
+            try:
+                results = model(frame, verbose=False)
+                labels = [model.names[int(b.cls[0])].lower()
+                          for r in results for b in r.boxes]
+                log_event("DEBUG", f"[CD2] YOLO raw labels={labels}")
+
+                hits = [l for l in labels if any(w in l for w in
+                        ["cell", "phone", "laptop", "tablet", "monitor"])]
+                if hits and time.time() - last_obj > 5:
+                    log_event("ALERT", f"[CD2] Electronic object(s) detected={hits}")
+                    clip = save_video_clip(frame)
+                    write_json({
+                        "Name": f"Electronic Object {hits}",
+                        "Time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "Duration": "3 sec",
+                        "Mark": 2.5,
+                        "Link": clip,
+                        "RId": get_resultId()
+                    })
+                    log_event("INFO", f"[CD2] YOLO proof saved: {clip}")
+                    last_obj = time.time()
+            except Exception as e:
+                log_event("ERROR", f"[CD2] YOLO inference failure: {e}")
+                traceback.print_exc()
+
+        time.sleep(0.3)
+
+    try:
+        cap_local.release()
+        log_event("INFO", "[CD2] Camera released successfully.")
+    except Exception as e:
+        log_event("ERROR", f"[CD2] Failed to release camera: {e}")
+
+    log_event("INFO", "🛑 [CD2] Multi-Face/Object Detection Stopped.")
+
+
+def objectDetection():
+    """Standalone YOLO with extreme verbosity and safe shutdown."""
+    global Globalflag
+    log_event("INFO", "📱 [OD] Stand-alone Object Detection INITIATED")
+
+    cap_local = cv2.VideoCapture(0)
+    if not cap_local.isOpened():
+        log_event("ERROR", "Camera failed to open in OD thread.")
+        return
+
+    try:
+        model = YOLO("yolov8n.pt")
+        log_event("INFO", "✅ YOLOv8 model loaded successfully in OD thread.")
+    except Exception as e:
+        log_event("ERROR", f"YOLO load fail in OD: {e}")
+        traceback.print_exc()
+        cap_local.release()
+        return
+
+    while True:
+        if not Globalflag:
+            log_event("INFO", "[OD] Globalflag=False → stopping detection thread.")
+            break
+
+        ok, frame = cap_local.read()
+        if not ok or frame is None:
+            log_event("WARN", "OD: Blank frame captured.")
+            continue
+
+        try:
+            res = model(frame, verbose=False)
+            labels = [model.names[int(b.cls[0])].lower()
+                      for r in res for b in r.boxes]
+            log_event("DEBUG", f"[OD] YOLO labels={labels}")
+
+            targets = [l for l in labels if any(w in l for w in
+                       ["cell", "phone", "laptop", "tablet", "monitor"])]
+            if targets:
+                log_event("ALERT", f"[OD] Electronic object(s) detected={targets}")
+                name = save_video_clip(frame)
+                write_json({
+                    "Name": f"Electronic Object {targets}",
+                    "Time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "Duration": "3 sec",
+                    "Mark": 2.5,
+                    "Link": name,
+                    "RId": get_resultId()
+                })
+                log_event("INFO", f"[OD] Proof saved: {name}")
+                time.sleep(3)
+        except Exception as e:
+            log_event("ERROR", f"[OD] YOLO inference crash: {e}")
+            traceback.print_exc()
+
+        time.sleep(0.5)
+
+    try:
+        cap_local.release()
+        log_event("INFO", "[OD] Camera released successfully.")
+    except Exception as e:
+        log_event("ERROR", f"[OD] Failed to release camera: {e}")
+
+    log_event("INFO", "🛑 [OD] Object Detection thread stopped.")
+
+
+
+# -------------------- Results and Violations --------------------
+
 def getResults():
-    with open('result.json', 'r+') as file:
-        # First we load existing data into a dict.
-        result_data = json.load(file)
-        return result_data
+    """Return list of all results stored in result.json."""
+    try:
+        with open('result.json', 'r', encoding='utf-8') as file:
+            data = json.load(file)
+            if isinstance(data, list):
+                # Sort by latest first
+                return sorted(data, key=lambda x: x.get("Id", 0), reverse=True)
+            else:
+                return []
+    except FileNotFoundError:
+        print("⚠️ result.json not found — returning empty list.")
+        return []
+    except Exception as e:
+        print(f"⚠️ Error reading result.json: {e}")
+        return []
 
-#Function to give result details
-def getResultDetails(rid):
-    with open('result.json', 'r+') as file:
-        # First we load existing data into a dict.
-        result_data = json.load(file)
-        filtered_result = [item for item in result_data if item["Id"] == int(rid)]
-    with open('violation.json', 'r+') as file:
-        # First we load existing data into a dict.
-        violation_data = json.load(file)
-        filtered_violations = [item for item in violation_data if item["RId"] == int(rid)]
-    resultDetails = {
-            "Result": filtered_result,
-            "Violation": filtered_violations
-        }
-    return resultDetails
+def getResultDetails(rid: int):
+    """Return detailed result and all linked violations for a given result ID."""
+    try:
+        with open("result.json", "r", encoding="utf-8") as rf:
+            result_data = json.load(rf)
+            # Filter the matching result
+            filtered_result = [item for item in result_data if int(item.get("Id", -1)) == int(rid)]
+    except FileNotFoundError:
+        print("⚠️ result.json not found.")
+        filtered_result = []
+    except Exception as e:
+        print(f"⚠️ Error reading result.json: {e}")
+        filtered_result = []
+
+    try:
+        with open("violation.json", "r", encoding="utf-8") as vf:
+            violation_data = json.load(vf)
+            # Filter only violations matching this Result ID
+            filtered_violations = [v for v in violation_data if int(v.get("RId", -1)) == int(rid)]
+    except FileNotFoundError:
+        print("⚠️ violation.json not found.")
+        filtered_violations = []
+    except Exception as e:
+        print(f"⚠️ Error reading violation.json: {e}")
+        filtered_violations = []
+
+    return {
+        "Result": filtered_result,
+        "Violation": filtered_violations
+    }
+# -------------------- Electronic Object Detection --------------------
+
+
+
 
 a = Recorder()
 fr = FaceRecognition()

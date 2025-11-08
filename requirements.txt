@@ -1,0 +1,8 @@
+opencv-python
+mediapipe
+ultralytics
+dlib
+flask
+mysql-connector-python
+PyAutoGUI
+PyGetWindow
