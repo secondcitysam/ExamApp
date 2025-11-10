@@ -1,0 +1,21 @@
+Title,Choice A,Choice B,Choice C,Choice D,Correct Answer
+What is Java?,A programming language,A database,A markup language,A hardware,A programming language
+Which company developed Java?,Microsoft,Apple,Sun Microsystems,Google,Sun Microsystems
+What is the extension of Java bytecode files?,.jav,.class,.java,.exe,.class
+Which of the following is not a Java feature?,Object-Oriented,Platform Dependent,Portable,Robust,Platform Dependent
+What does JVM stand for?,Java Virtual Machine,Java Variable Method,Java Visual Model,Java Verified Module,Java Virtual Machine
+Which keyword is used to inherit a class in Java?,extends,implements,super,this,extends
+Which method is the entry point of a Java program?,main(),start(),execute(),run(),main()
+Which of the following is not a valid access modifier in Java?,public,private,protected,internal,internal
+What is the size of int in Java?,2 bytes,4 bytes,8 bytes,16 bytes,4 bytes
+Which collection class allows key-value pairs?,List,Set,Map,Queue,Map
+Which of these keywords is used to handle exceptions?,try,catch,throw,All of the above,All of the above
+Which of these is used to define a constant variable?,const,final,static,constant,final
+Which package contains the Random class?,java.util,java.lang,java.io,java.net,java.util
+Which interface is implemented by the Thread class?,Runnable,Serializable,Comparable,Cloneable,Runnable
+Which of the following loops is guaranteed to execute at least once?,for,while,do-while,foreach,do-while
+What is the parent class of all Java classes?,System,Object,Main,Runtime,Object
+What does the 'super' keyword do?,Access child class methods,Refer to the current object,Refer to the parent class,Call static methods,Refer to the parent class
+Which keyword prevents method overriding?,final,static,abstract,volatile,final
+Which statement is used to exit from a loop?,stop,return,exit,break,break
+Which exception is thrown when dividing by zero?,IOException,ArithmeticException,NullPointerException,ClassNotFoundException,ArithmeticException

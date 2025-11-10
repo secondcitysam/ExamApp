@@ -1,47 +1,87 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Exam Result</title>
-    <link rel="stylesheet" href="{{url_for('static', filename='css/display.css')}}">
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Exam Result</title>
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css">
 
+  <style>
+    body {
+      background-color: #f7fafa;
+      font-family: 'Segoe UI', sans-serif;
+    }
+    .navbar {
+      background-color: #5f9ea0;
+    }
+    .navbar-brand {
+      color: white;
+      font-weight: 600;
+    }
+    .navbar-nav .nav-link {
+      color: white !important;
+      font-weight: 500;
+    }
+    .card {
+      margin: 50px auto;
+      width: 60%;
+      padding: 25px;
+      border-radius: 15px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+      background: #fff;
+    }
+    .profile-img {
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      object-fit: cover;
+      border: 3px solid #5f9ea0;
+    }
+    .status-pass {
+      color: #28a745;
+      font-weight: 600;
+    }
+    .status-fail {
+      color: #dc3545;
+      font-weight: 600;
+    }
+    .btn-nav {
+      background-color: #5f9ea0;
+      color: #fff;
+      font-weight: 500;
+      border-radius: 30px;
+      padding: 8px 20px;
+    }
+    .btn-nav:hover {
+      background-color: #468b8b;
+      color: #fff;
+    }
+  </style>
 </head>
+
 <body>
-        <nav class="navbar navbar-expand-md" >
-            <span class="text">The Online Exam Proctor</span>
-        </nav>
-        <div class="wrapper">
-            <!-- PRICING-TABLE CONTAINER -->
-            <div class="pricing-table group">
-                <!-- PROFESSIONAL -->
-                <div class="professional">
-                    <h1 class="title">Result</h1>
-                    <!-- CONTENT -->
-                     {% set result = result_status.split(';') %}
-                    <div class="content">
-                        <img alt="" src="{{ url_for('static', filename='Profiles/') }}{{ result[4] }}" style="width:100px">
-                    </div>
-                    <!-- /CONTENT -->
-                    <!-- FEATURES -->
+  <!-- ✅ Navbar with Home + Logout -->
+  <nav class="navbar navbar-expand-md">
+    <a class="navbar-brand" href="#">The Online Exam Proctor</a>
+    <div class="ml-auto">
+      <a href="{{ url_for('selectExamPage') }}" class="nav-link d-inline-block mr-3">🏠 Home</a>
+      <a href="{{ url_for('logout') }}" class="nav-link d-inline-block">🔒 Logout</a>
+    </div>
+  </nav>
 
-                    <ul class="features">
-                        <li><span>Name : </span>{{ result[0] }}</li>
-                        <li><span>Exam status : </span>{{ result[1] }}</li>
-                        <li><span>Total Mark : </span>{{ result[2] }}</li>
-                        <li><span>Date :</span>{{ result[3] }}</li>
-                    </ul>
+  {% set result = result_status.split(';') if result_status else [] %}
+  <div class="card text-center">
+    <img alt="Profile" src="{{ url_for('static', filename='Profiles/') }}{{ result[4] }}" class="profile-img mb-3">
+    <h3 class="mb-3">{{ result[0] }}</h3>
+    <p><b>Exam Status:</b> <span class="{{ 'status-pass' if result[1]=='PASS' else 'status-fail' }}">{{ result[1] }}</span></p>
+    <p><b>Total Marks:</b> {{ result[2] }}</p>
+    <p><b>Date:</b> {{ result[3] }}</p>
+    <a href="{{ url_for('selectExamPage') }}" class="btn btn-nav mt-3">Back to Dashboard</a>
+  </div>
 
-                    <!-- /FEATURES -->
-                    <!-- PT-FOOTER -->
-
-                    <!-- /PT-FOOTER -->
-                </div>
-                <!-- /PROFESSIONAL -->
-            </div>
-            <!-- /PRICING-TABLE -->
-
-        </div>
+  <footer class="text-center mt-4">
+    <p>&copy; The Online Exam Proctor System</p>
+  </footer>
 </body>
 </html>

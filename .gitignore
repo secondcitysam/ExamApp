@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+env/
+
+# IDE configs
+.idea/
+.vscode/
+
+# Media & temp files
+*.mp4
+*.avi
+*.mov
+*.wav
+*.json
+*.log
+
+# Output folders
+static/OutputAudios/
+static/OutputVideos/
+static/Profiles/
+
+# OS-specific files
+.DS_Store
+Thumbs.db

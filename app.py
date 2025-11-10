@@ -18,6 +18,9 @@ from flask import send_from_directory, abort
 from flask import Flask, render_template, request, redirect, url_for, send_from_directory, Response, abort
 import os
 import re
+import csv
+from werkzeug.utils import secure_filename
+
 
 STATIC_OUTPUT_VIDEOS = r"D:\PBL_APP\The-Online-Exam-Proctor\static\OutputVideos"
 
@@ -168,6 +171,22 @@ def video_capture():
 def main():
     return render_template('login.html')
 
+@app.route('/adminSignup')
+def adminSignup():
+    return render_template('admin_signup.html')
+
+@app.route('/adminSignupAction', methods=['POST'])
+def adminSignupAction():
+    name = request.form['name']
+    email = request.form['email']
+    password = request.form['password']
+    cur = mysql.connection.cursor()
+    cur.execute("INSERT INTO students (name, email, password, role) VALUES (%s, %s, %s, 'ADMIN')", (name, email, password))
+    mysql.connection.commit()
+    cur.close()
+    flash("Admin account created successfully. Please login.", "success")
+    return redirect(url_for('main'))
+
 @app.route('/login', methods=['POST'])
 def login():
     global studentInfo
@@ -182,32 +201,252 @@ def login():
         flash('Your Email or Password is incorrect.', 'error')
         return redirect(url_for('main'))
 
-    id, name, email, pwd, role = data
-    studentInfo = {"Id": id, "Name": name, "Email": email, "Password": pwd}
+    id, name, email, pwd, role, admin_id = data
+    studentInfo = {
+        "Id": id,
+        "Name": name,
+        "Email": email,
+        "Password": pwd,
+        "Role": role,
+        "admin_id": admin_id
+    }
     session['user'] = studentInfo
 
     if role == 'STUDENT':
         utils.Student_Name = name
-        return redirect(url_for('rules'))
+        return redirect(url_for('selectExamPage'))
     else:
         return redirect(url_for('adminStudents'))
+
+
+
 
 @app.route('/logout')
 def logout():
     session.pop('user', None)
     return render_template('login.html')
 
+
+@app.route('/uploadExam')
+def uploadExam():
+    guard = require_login()
+    if guard:
+        return guard
+
+    # Check with the correct key name (capital 'R')
+    if studentInfo.get("Role") != "ADMIN":
+        flash("Unauthorized access", "error")
+        return redirect(url_for('main'))
+
+    return render_template('upload_exam.html')
+
+
+
+@app.route('/uploadExamAction', methods=['POST'])
+def uploadExamAction():
+    guard = require_login()
+    if guard:
+        return guard
+
+    exam_name = request.form['exam_name']
+    csv_file = request.files['csv_file']
+    admin_id = studentInfo['Id']
+
+    if csv_file.filename == '':
+        flash('No file selected', 'error')
+        return redirect(url_for('uploadExam'))
+
+    filename = secure_filename(csv_file.filename)
+    save_dir = os.path.join(app.root_path, "static", "ExamCSVs")  # ✅ absolute path
+    os.makedirs(save_dir, exist_ok=True)
+    filepath = os.path.join(save_dir, filename)
+    csv_file.save(filepath)
+
+    print(f"📁 Saved CSV to: {filepath}")
+    cur = mysql.connection.cursor()
+    cur.execute("INSERT INTO exams (admin_id, exam_name, csv_filename) VALUES (%s, %s, %s)", (admin_id, exam_name, filename))
+    exam_id = cur.lastrowid
+    print(f"🧾 New exam inserted with ID={exam_id}")
+
+    inserted, skipped = 0, 0
+
+    try:
+        with open(filepath, "r", encoding="utf-8-sig", newline='') as f:
+            reader = csv.reader(f, delimiter=',')
+            headers = next(reader)
+            print("🧩 CSV Headers:", headers)
+
+            for row in reader:
+                print("ROW:", row)
+                if len(row) < 6:
+                    print("⚠️ Skipping malformed row:", row)
+                    skipped += 1
+                    continue
+
+                title, a, b, c, d, ans = [r.strip() for r in row]
+                cur.execute("""
+                    INSERT INTO questions (exam_id, title, choice_a, choice_b, choice_c, choice_d, correct_answer)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (exam_id, title, a, b, c, d, ans))
+                inserted += 1
+
+        mysql.connection.commit()
+        cur.close()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        flash(f"⚠️ Error inserting questions: {e}", "error")
+        return redirect(url_for('uploadExam'))
+
+    print(f"✅ Inserted {inserted} questions, Skipped {skipped}")
+
+    flash(f"Exam uploaded successfully! Inserted {inserted} questions.", "success")
+    return redirect(url_for('adminResults'))
+
+
+@app.route('/selectExamPage')
+def selectExamPage():
+    guard = require_login()
+    if guard: return guard
+
+    if studentInfo["Role"] != "STUDENT":
+        flash("Only students can access this page", "error")
+        return redirect(url_for('main'))
+
+    admin_id = studentInfo.get("admin_id")
+    cur = mysql.connection.cursor()
+    cur.execute("SELECT * FROM exams WHERE admin_id=%s", (admin_id,))
+    exams = cur.fetchall()
+    cur.close()
+
+    return render_template('exam_selection.html', exams=exams)
+
+@app.route('/selectExam/<int:exam_id>', methods=['POST'])
+def selectExam(exam_id):
+    session['selected_exam'] = exam_id
+    print(f"✅ Exam {exam_id} stored in session.")
+    return redirect(url_for('rules'))  # ✅ Go to rules first
+
+
+
+@app.route('/getExamQuestions')
+def getExamQuestions():
+    guard = require_login()
+    if guard:
+        return guard
+
+    # ✅ Always check both query and session
+    exam_id = request.args.get("exam_id", type=int)
+    if not exam_id:
+        exam_id = session.get("selected_exam")
+
+    print(f"🧩 DEBUG: Requested questions for exam_id = {exam_id}")
+
+    if not exam_id:
+        print("❌ No exam_id found in session or query.")
+        return jsonify([])
+
+    cur = mysql.connection.cursor()
+    cur.execute("""
+        SELECT title, choice_a, choice_b, choice_c, choice_d, correct_answer
+        FROM questions WHERE exam_id=%s
+    """, (exam_id,))
+    rows = cur.fetchall()
+    cur.close()
+
+    print(f"📊 DEBUG: Found {len(rows)} questions in DB for exam_id={exam_id}")
+
+    questions = [{
+        "title": r[0],
+        "choices": [r[1], r[2], r[3], r[4]],
+        "answer": r[5]
+    } for r in rows]
+
+    return jsonify(questions)
+
+
+@app.route('/submitExam', methods=['POST'])
+def submitExam():
+    guard = require_login()
+    if guard:
+        return guard
+
+    data = request.get_json()
+    exam_id = data.get("exam_id")
+    answers = data.get("answers", {})
+
+    cur = mysql.connection.cursor()
+    cur.execute("SELECT title, correct_answer FROM questions WHERE exam_id=%s", (exam_id,))
+    rows = cur.fetchall()
+    cur.close()
+
+    total_questions = len(rows)
+    correct = 0
+
+    # Compare answers
+    for idx, (title, correct_answer) in enumerate(rows):
+        chosen = answers.get(str(idx)) or answers.get(idx)
+        if chosen and chosen.strip().lower() == correct_answer.strip().lower():
+            correct += 1
+
+    total_marks = correct * 1  # 1 mark each
+    percentage = round((correct / total_questions) * 100, 2) if total_questions else 0
+    status = "PASS" if percentage >= 50 else "FAIL"
+    date = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Save to result.json
+    import json, utils
+    rid = utils.get_resultId()
+    result_entry = {
+        "Id": rid,
+        "Name": studentInfo["Name"],
+        "ExamName": utils.Student_Name,
+        "ExamId": exam_id,
+        "Marks": total_marks,
+        "Total": total_questions,
+        "Percentage": percentage,
+        "Status": status,
+        "Date": date,
+        "Profile": utils.Student_Name + "_Profile.jpg"
+    }
+
+    try:
+        if not os.path.exists("result.json"):
+            with open("result.json", "w") as f:
+                json.dump([], f)
+        with open("result.json", "r+") as f:
+            data = json.load(f)
+            data.append(result_entry)
+            f.seek(0)
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print("⚠️ Failed to write result.json:", e)
+
+    return jsonify({
+        "message": "Exam submitted successfully",
+        "marks": total_marks,
+        "total": total_questions,
+        "percentage": percentage,
+        "status": status,
+        "rid": rid
+    })
+
+
 @app.route('/rules')
 def rules():
     guard = require_login()
     if guard: return guard
-    return render_template('ExamRules.html')
+
+    exam_id = session.get('selected_exam')
+    return render_template('ExamRules.html', exam_id=exam_id)
 
 @app.route('/faceInput')
 def faceInput():
     guard = require_login()
     if guard: return guard
-    return render_template('ExamFaceInput.html')
+
+    exam_id = session.get('selected_exam')
+    return render_template('ExamFaceInput.html', exam_id=exam_id)
 
 @app.route('/saveFaceInput')
 def saveFaceInput():
@@ -238,17 +477,21 @@ def saveFaceInput():
 def confirmFaceInput():
     guard = require_login()
     if guard: return guard
+
+    exam_id = session.get('selected_exam')
     try:
         utils.fr.encode_faces()
     except Exception as e:
         print(f"Encode faces error: {e}")
-    return render_template('ExamConfirmFaceInput.html', profile=profileName)
+    return render_template('ExamConfirmFaceInput.html', profile=profileName, exam_id=exam_id)
 
 @app.route('/systemCheck')
 def systemCheck():
     guard = require_login()
     if guard: return guard
-    return render_template('ExamSystemCheck.html')
+
+    exam_id = session.get('selected_exam')
+    return render_template('ExamSystemCheck.html', exam_id=exam_id)
 
 @app.route('/systemCheck', methods=["POST"])
 def systemCheckRoute():
@@ -275,17 +518,37 @@ def exam():
     if guard:
         return guard
 
+    # ✅ Get exam ID from session (set by /selectExam)
+    exam_id = session.get('selected_exam')
+    if not exam_id:
+        flash("No exam selected. Please choose an exam first.", "error")
+        return redirect(url_for('selectExamPage'))
+
+    # ✅ Fetch exam name for display
+    cur = mysql.connection.cursor()
+    cur.execute("SELECT exam_name FROM exams WHERE id=%s", (exam_id,))
+    exam = cur.fetchone()
+    cur.close()
+
+    if not exam:
+        flash("Exam not found.", "error")
+        return redirect(url_for('selectExamPage'))
+
+    exam_name = exam[0]
+
+    # -----------------------
+    # ✅ Proctoring logic (unchanged)
+    # -----------------------
     init_camera()
     keyboard.hook(utils.shortcut_handler)
     utils.Globalflag = True
     utils.Student_Name = studentInfo["Name"]
 
-    print(f"🟢 Starting proctoring for {utils.Student_Name}...")
+    print(f"🟢 Starting proctoring for {utils.Student_Name} (Exam ID: {exam_id})")
 
-    # 🚀 Start detection threads asynchronously AFTER returning the response
     def start_proctoring_threads():
         try:
-            print("🧠 Launching all detection threads in background...")
+            print("🧠 Launching detection threads...")
             utils.executor.submit(utils.fr.run_recognition)
             utils.executor.submit(utils.cheat_Detection1)
             utils.executor.submit(utils.cheat_Detection2)
@@ -293,76 +556,43 @@ def exam():
             utils.executor.submit(utils.objectDetection)
             print("✅ Detection threads launched successfully.")
         except Exception as e:
-            print(f"⚠️ Failed to start detection threads: {e}")
+            print(f"⚠️ Failed to start proctoring threads: {e}")
 
     threading.Thread(target=start_proctoring_threads, daemon=True).start()
 
-    # ✅ Immediately return the quiz page to browser
-    return render_template('Exam.html')
+    # ✅ Return template with exam_id + name
+    return render_template('Exam.html', exam_id=exam_id, exam_name=exam_name, student_name=studentInfo["Name"])
+
 
 
 # ---------------------------
 # Exam Submit
 # ---------------------------
-@app.route('/exam', methods=["POST"])
-def examAction():
+import csv
+from flask import jsonify
+
+@app.route('/exam/<int:exam_id>')
+def examPage(exam_id):
     guard = require_login()
-    if guard: return guard
+    if guard:
+        return guard
 
-    examData = request.json or {}
-    exam_input = str(examData.get('input', '')).strip()
-    link = ''
+    session['selected_exam'] = exam_id  # store in session for fallback
 
-    if exam_input != '':
-        utils.Globalflag = False
-        release_camera()
-        time.sleep(1)
-        print("✅ Detection threads signaled to stop. Proceeding with result storage.")
+    # Optional validation
+    cur = mysql.connection.cursor()
+    cur.execute("SELECT exam_name FROM exams WHERE id=%s", (exam_id,))
+    exam = cur.fetchone()
+    cur.close()
 
-        print("🔴 Proctoring stopped after submission.")
+    if not exam:
+        flash("Exam not found.", "error")
+        return redirect(url_for('selectExamPage'))
 
-        utils.write_json({
-            "Name": ('Shortcuts (' + ','.join(list(dict.fromkeys(utils.shorcuts))) + ') detected.')
-                    if utils.shorcuts else "No shortcuts detected.",
-            "Time": f"{len(utils.shorcuts)} Counts",
-            "Mark": (1.5 * len(utils.shorcuts)),
-            "RId": utils.get_resultId()
-        })
+    # ✅ Pass exam_id and exam_name to template
+    return render_template("Exam.html", exam_id=exam_id, exam_name=exam[0])
 
-        utils.shorcuts = []
-        trustScore = utils.get_TrustScore(utils.get_resultId()) if os.path.exists("violation.json") else 0
-        try:
-            totalMark = math.floor(float(exam_input) * 6.6667)
-        except:
-            totalMark = 0
 
-        if trustScore >= 30:
-            status = "Fail (Cheating)"
-            link = 'showResultFail'
-        elif totalMark < 50:
-            status = "Fail"
-            link = 'showResultFail'
-        else:
-            status = "Pass"
-            link = 'showResultPass'
-
-        utils.write_json({
-            "Id": utils.get_resultId(),
-            "Name": studentInfo['Name'],
-            "TotalMark": totalMark,
-            "TrustScore": max(100 - trustScore, 0),
-            "Status": status,
-            "Date": time.strftime("%Y-%m-%d", time.localtime(time.time())),
-            "StId": studentInfo['Id'],
-            "Link": profileName or ''
-        }, "result.json")
-
-        resultStatus = f"{studentInfo['Name']};{totalMark};{status};{time.strftime('%Y-%m-%d', time.localtime(time.time()))}"
-    else:
-        utils.Globalflag = True
-        resultStatus = ''
-
-    return jsonify({"output": resultStatus, "link": link})
 
 # ---------------------------
 # Results / Admin
@@ -431,15 +661,25 @@ def adminStudents():
 @app.route('/insertStudent', methods=['POST'])
 def insertStudent():
     guard = require_login()
-    if guard: return guard
+    if guard:
+        return guard
+
     name = request.form.get('username', '')
     email = request.form.get('email', '')
     password = request.form.get('password', '')
+
+    # Get currently logged-in admin's ID
+    admin_id = studentInfo['Id']
+
     cur = mysql.connection.cursor()
-    cur.execute("INSERT INTO students (Name, Email, Password, Role) VALUES (%s, %s, %s, %s)",
-                (name, email, password, 'STUDENT'))
+    cur.execute("""
+        INSERT INTO students (Name, Email, Password, Role, admin_id)
+        VALUES (%s, %s, %s, 'STUDENT', %s)
+    """, (name, email, password, admin_id))
     mysql.connection.commit()
     cur.close()
+
+    flash("Student added successfully and linked to your account!", "success")
     return redirect(url_for('adminStudents'))
 
 @app.route('/deleteStudent/<string:stdId>')

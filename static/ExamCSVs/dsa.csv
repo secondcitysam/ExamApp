@@ -1,0 +1,11 @@
+Title,Choice A,Choice B,Choice C,Choice D,Correct Answer
+What is the time complexity of binary search?,O(n),O(log n),O(n log n),O(1),O(log n)
+Which data structure uses FIFO order?,Stack,Queue,Tree,Graph,Queue
+Which data structure uses LIFO order?,Queue,Stack,Array,Linked List,Stack
+Which traversal method is used in Depth First Search?,Level Order,Preorder,Breadth First,Postorder,Preorder
+Which of the following is not a linear data structure?,Array,Linked List,Tree,Stack,Tree
+Which sorting algorithm has the best average case time complexity?,Bubble Sort,Insertion Sort,Quick Sort,Selection Sort,Quick Sort
+Which data structure is used for recursion?,Queue,Stack,Tree,Heap,Stack
+Which of the following operations has O(1) time complexity in an array?,Insertion at beginning,Deletion at middle,Access by index,Search,Access by index
+What is the maximum number of nodes in a binary tree of height h?,2^h,h^2,2^(h+1)-1,h!,2^(h+1)-1
+Which algorithm is used to find the shortest path in a graph?,Merge Sort,Dijkstra’s Algorithm,Binary Search,Kruskal’s Algorithm,Dijkstra’s Algorithm

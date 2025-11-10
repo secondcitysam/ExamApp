@@ -6,7 +6,6 @@
 	<link rel="stylesheet" type="text/css" href="{{url_for('static', filename='css/all.min.css')}}">
 	<link href="https://fonts.googleapis.com/css?family=Poppins:600&display=swap" rel="stylesheet">
 	<script src="https://kit.fontawesome.com/a81368914c.js"></script>
-
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 </head>
 <body>
@@ -19,6 +18,7 @@
 			<form action="{{url_for('login')}}" method="post">
 				<img src="{{url_for('static', filename='img/avatar.svg')}}">
 				<h2 class="title">Welcome</h2>
+
            		<div class="input-div one">
            		   <div class="i">
            		   		<i class="fas fa-user"></i>
@@ -28,6 +28,7 @@
            		   		<input type="text" class="input" name="username" id="username" required>
            		   </div>
            		</div>
+
            		<div class="input-div pass">
            		   <div class="i">
            		    	<i class="fas fa-lock"></i>
@@ -37,19 +38,31 @@
            		    	<input type="password" class="input" name="password" id="password" required>
             	   </div>
             	</div>
-					<br>
+
+				<br>
+
 				{% with messages = get_flashed_messages() %}
 					{% if messages %}
 						{% for message in messages %}
-				<h6 class="error">{{ message }}</h6>
+							<h6 class="error">{{ message }}</h6>
 						{% endfor %}
 					{% endif %}
 				{% endwith %}
 
             	<input type="submit" class="btn" value="Login">
+
+				<!-- 🔹 Added Signup Link -->
+				<p style="text-align:center; margin-top:15px;">
+					Don’t have an account?
+					<a href="{{ url_for('adminSignup') }}" style="color:#4CAF50; text-decoration:none; font-weight:600;">
+						Create Admin Account
+					</a>
+				</p>
+
             </form>
         </div>
     </div>
+
     <script type="text/javascript" src="{{url_for('static', filename='js/login.js')}}"></script>
 </body>
 </html>

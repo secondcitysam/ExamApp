@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+	<!-- Boxicons -->
+	<link href="https://unpkg.com/boxicons@2.0.9/css/boxicons.min.css" rel="stylesheet">
+
+	<!-- Bootstrap -->
+	<link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css"
+	integrity="sha384-9aIt2nRpC12Uk9gS9baDl411NQApFmC26EwAOH8WgZl5MYYxFfc+NcPb1dKGj7Sk"
+	crossorigin="anonymous">
+
+	<!-- Custom -->
+	<link rel="stylesheet" href="{{ url_for('static', filename='css/TrStudent.css') }}">
+	<title>Select Exam</title>
+</head>
+<body>
+
+	<!-- SIDEBAR -->
+	<section id="sidebar">
+		<a href="#" class="brand">
+			<i class='bx bxs-smile'></i>
+			<span class="text">Student Panel</span>
+		</a>
+		<ul class="side-menu top">
+			<li class="active">
+				<a href="{{ url_for('selectExamPage') }}">
+					<i class='bx bxs-book'></i>
+					<span class="text">Available Exams</span>
+				</a>
+			</li>
+			<li>
+				<a href="{{ url_for('logout') }}">
+					<i class='bx bxs-log-out-circle'></i>
+					<span class="text">Logout</span>
+				</a>
+			</li>
+		</ul>
+	</section>
+	<!-- END SIDEBAR -->
+
+	<!-- CONTENT -->
+	<section id="content">
+		<!-- NAVBAR -->
+		<nav>
+			<i class='bx bx-menu'></i>
+			<span class="text">The Online Exam Proctor</span>
+			<div>
+				<a href="#">
+					<i class='bx bxs-user'></i>
+					<span class="text">{{ studentInfo['Name'] if studentInfo else 'Profile' }}</span>
+				</a>
+			</div>
+		</nav>
+		<!-- END NAVBAR -->
+
+		<!-- MAIN -->
+		<main>
+			<div class="head-title">
+				<div class="left">
+					<h1>Available Exams</h1>
+					<ul class="breadcrumb">
+						<li><a href="#">Dashboard</a></li>
+						<li><i class='bx bx-chevron-right'></i></li>
+						<li><a class="active" href="#">Select Exam</a></li>
+					</ul>
+				</div>
+			</div>
+
+			<div class="table-data">
+				<div class="record">
+					<div class="head">
+						<h3>Your Exams</h3>
+					</div>
+
+					{% if exams %}
+					<table class="table table-bordered table-striped text-center">
+						<thead class="thead-dark">
+							<tr>
+								<th>Exam ID</th>
+								<th>Exam Name</th>
+								<th>Uploaded File</th>
+								<th>Date</th>
+								<th>Action</th>
+							</tr>
+						</thead>
+						<tbody>
+							{% for exam in exams %}
+							<tr>
+								<td>{{ exam[0] }}</td>
+								<td>{{ exam[2] }}</td>
+								<td>{{ exam[3] }}</td>
+								<td>{{ exam[4].strftime('%Y-%m-%d %H:%M') if exam[4] else '—' }}</td>
+								<td>
+									<form action="{{ url_for('selectExam', exam_id=exam[0]) }}" method="POST" style="display:inline;"
+										  onsubmit="sessionStorage.setItem('selected_exam', '{{ exam[0] }}')">
+										<button class="btn btn-success btn-sm" type="submit">Attempt</button>
+									</form>
+								</td>
+							</tr>
+							{% endfor %}
+						</tbody>
+					</table>
+					{% else %}
+					<p style="text-align:center; margin-top:30px;">No exams available from your admin.</p>
+					{% endif %}
+				</div>
+			</div>
+		</main>
+		<!-- END MAIN -->
+	</section>
+	<!-- END CONTENT -->
+
+	<script src="https://code.jquery.com/jquery-3.3.1.slim.min.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/popper.js@1.14.7/dist/umd/popper.min.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/bootstrap@4.3.1/dist/js/bootstrap.min.js"></script>
+	<script src="{{ url_for('static', filename='js/TrStudent.js') }}"></script>
+</body>
+</html>
