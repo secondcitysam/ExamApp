@@ -39,15 +39,29 @@ warnings.filterwarnings("ignore")
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.secret_key = 'xyz'
 
-app.config['MYSQL_HOST'] = 'localhost'
-app.config['MYSQL_USER'] = 'root'
-app.config['MYSQL_PASSWORD'] = 'kotlin2025'
-app.config['MYSQL_DB'] = 'examproctordb'
+# app.config['MYSQL_HOST'] = 'localhost'
+# app.config['MYSQL_USER'] = 'root'
+# app.config['MYSQL_PASSWORD'] = 'kotlin2025'
+# app.config['MYSQL_DB'] = 'examproctordb'
+#
+#
+#
+#
+# mysql = MySQL(app)
 
 
+from flask_sqlalchemy import SQLAlchemy
+import os
 
+# Use environment variable for DB URL
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv(
+    'DATABASE_URL',
+    'postgresql://examproctor_user:IL4MVWiap5RNF0ihCe7u0xbqrMtF5Dk8@dpg-d48pjhqli9vc739eohvg-a.oregon-postgres.render.com/examproctor'
+)
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-mysql = MySQL(app)
+db = SQLAlchemy(app)
+
 
 executor = ThreadPoolExecutor(max_workers=4)
 
