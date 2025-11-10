@@ -63,7 +63,6 @@ def get_connection():
     # psycopg2 can accept the URL directly
     return psycopg2.connect(db_url)
 
-
 # ---------------------------
 # Auto-create required tables on startup (Render-safe)
 # ---------------------------
@@ -794,12 +793,14 @@ def updateStudent():
 
     return redirect(url_for('adminStudents'))
 
-
 # ---------------------------
 # Debug route to verify DB tables
 # ---------------------------
 @app.route('/debug_tables')
 def debug_tables():
+    """
+    Returns a JSON list of all tables in the connected PostgreSQL database.
+    """
     try:
         conn = get_connection()
         cur = conn.cursor()
@@ -821,5 +822,6 @@ def debug_tables():
 # Entry Point
 # ---------------------------
 if __name__ == '__main__':
-    initialize_database()  # ✅ Auto-create tables
+    initialize_database()
+    # On local dev, threaded=True so the generator (/video_capture) doesn’t starve other handlers.
     app.run(debug=True, threaded=True, host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
