@@ -1,28 +1,24 @@
 import math
 from concurrent.futures import ThreadPoolExecutor
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, Response, flash
+from flask import (
+    Flask, render_template, request, jsonify, session,
+    redirect, url_for, Response, flash, send_file, abort
+)
 import os
-from flask_mysqldb import MySQL
 import json
 import numpy as np
 import warnings
 import utils
 import threading
-import os
 import re
 import random
 import time
 import cv2
 import keyboard
-from flask import send_from_directory, abort
-from flask import Flask, render_template, request, redirect, url_for, send_from_directory, Response, abort
-import os
-import re
 import csv
+import psycopg2
+import psycopg2.extras
 from werkzeug.utils import secure_filename
-
-
-STATIC_OUTPUT_VIDEOS = r"D:\PBL_APP\The-Online-Exam-Proctor\static\OutputVideos"
 
 # ---------------------------
 # Globals
@@ -33,46 +29,44 @@ camera_initialized = False
 camera_active = False
 
 # ---------------------------
-# Flask & MySQL Config
+# Flask Config
 # ---------------------------
 warnings.filterwarnings("ignore")
 app = Flask(__name__, template_folder='templates', static_folder='static')
-app.secret_key = 'xyz'
-
-# app.config['MYSQL_HOST'] = 'localhost'
-# app.config['MYSQL_USER'] = 'root'
-# app.config['MYSQL_PASSWORD'] = 'kotlin2025'
-# app.config['MYSQL_DB'] = 'examproctordb'
-#
-#
-#
-#
-# mysql = MySQL(app)
-
-
-from flask_sqlalchemy import SQLAlchemy
-import os
-
-# Use environment variable for DB URL
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv(
-    'DATABASE_URL',
-    'postgresql://examproctor_user:IL4MVWiap5RNF0ihCe7u0xbqrMtF5Dk8@dpg-d48pjhqli9vc739eohvg-a.oregon-postgres.render.com/examproctor'
-)
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-db = SQLAlchemy(app)
-
+app.secret_key = os.getenv("SECRET_KEY", "xyz")  # set SECRET_KEY in Render
 
 executor = ThreadPoolExecutor(max_workers=4)
 
-# inside your Flask app (main.py or app.py)
+# Folders
+STATIC_DIR = "static"
+VIDEO_OUTPUT_DIR = os.path.join(STATIC_DIR, "OutputVideos")
+PROFILE_DIR = os.path.join(STATIC_DIR, "Profiles")
+AUDIO_DIR = os.path.join(STATIC_DIR, "OutputAudios")
+EXAM_CSV_DIR = os.path.join(STATIC_DIR, "ExamCSVs")
 
-# app.py
-from flask import Response, request, send_file, abort
-import os, re
+os.makedirs(VIDEO_OUTPUT_DIR, exist_ok=True)
+os.makedirs(PROFILE_DIR, exist_ok=True)
+os.makedirs(AUDIO_DIR, exist_ok=True)
+os.makedirs(EXAM_CSV_DIR, exist_ok=True)
 
-VIDEO_OUTPUT_DIR = r"D:\PBL_APP\The-Online-Exam-Proctor\static\OutputVideos"
+# ---------------------------
+# PostgreSQL Connection
+# ---------------------------
+def get_connection():
+    """
+    Returns a new psycopg2 connection using Render's DATABASE_URL.
+    DATABASE_URL is provided by Render's built-in PostgreSQL.
+    """
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        raise RuntimeError("DATABASE_URL is not set. Add Render's Postgres and redeploy.")
+    # psycopg2 can accept the URL directly
+    return psycopg2.connect(db_url)
 
+
+# ---------------------------
+# Serve Recorded Videos (range support)
+# ---------------------------
 @app.route('/video/<path:filename>')
 def serve_video(filename):
     filepath = os.path.join(VIDEO_OUTPUT_DIR, filename)
@@ -83,7 +77,6 @@ def serve_video(filename):
     range_header = request.headers.get('Range', None)
 
     if not range_header:
-        # First load: give full file, Chrome can read metadata
         resp = send_file(filepath, mimetype="video/mp4", conditional=True)
         resp.headers["Accept-Ranges"] = "bytes"
         resp.headers["Content-Length"] = str(file_size)
@@ -111,7 +104,7 @@ def serve_video(filename):
     return resp
 
 
-
+# ---------------------------
 # Helpers
 # ---------------------------
 def require_login():
@@ -120,6 +113,7 @@ def require_login():
         studentInfo = session['user']
         return None
     return redirect(url_for('main'))
+
 
 # ---------------------------
 # Camera Management
@@ -143,7 +137,7 @@ def init_camera():
                 print(f"🎥 Camera initialized at index {idx}")
                 return True
         cap.release()
-    print("❌ No camera found on any index.")
+    print("❌ No camera found.")
     return False
 
 
@@ -153,10 +147,11 @@ def release_camera():
     if utils.cap is not None and utils.cap.isOpened():
         utils.cap.release()
         camera_active = False
-        print("📴 Camera released successfully.")
+        print("📴 Camera released.")
+
 
 # ---------------------------
-# Streaming
+# MJPEG Stream
 # ---------------------------
 @app.route('/video_capture')
 def video_capture():
@@ -182,6 +177,7 @@ def video_capture():
         release_camera()
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
+
 # ---------------------------
 # Routes
 # ---------------------------
@@ -189,45 +185,55 @@ def video_capture():
 def main():
     return render_template('login.html')
 
+
 @app.route('/adminSignup')
 def adminSignup():
     return render_template('admin_signup.html')
+
 
 @app.route('/adminSignupAction', methods=['POST'])
 def adminSignupAction():
     name = request.form['name']
     email = request.form['email']
     password = request.form['password']
-    cur = mysql.connection.cursor()
-    cur.execute("INSERT INTO students (name, email, password, role) VALUES (%s, %s, %s, 'ADMIN')", (name, email, password))
-    mysql.connection.commit()
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO students (name, email, password, role)
+        VALUES (%s, %s, %s, 'ADMIN')
+    """, (name, email, password))
+    conn.commit()
     cur.close()
+    conn.close()
+
     flash("Admin account created successfully. Please login.", "success")
     return redirect(url_for('main'))
+
 
 @app.route('/login', methods=['POST'])
 def login():
     global studentInfo
     username = request.form.get('username', '')
     password = request.form.get('password', '')
-    cur = mysql.connection.cursor()
-    cur.execute("SELECT * FROM students WHERE Email=%s AND Password=%s", (username, password))
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, name, email, password, role, admin_id
+        FROM students
+        WHERE email=%s AND password=%s
+    """, (username, password))
     data = cur.fetchone()
     cur.close()
+    conn.close()
 
     if data is None:
         flash('Your Email or Password is incorrect.', 'error')
         return redirect(url_for('main'))
 
     id, name, email, pwd, role, admin_id = data
-    studentInfo = {
-        "Id": id,
-        "Name": name,
-        "Email": email,
-        "Password": pwd,
-        "Role": role,
-        "admin_id": admin_id
-    }
+    studentInfo = {"Id": id, "Name": name, "Email": email, "Password": pwd, "Role": role, "admin_id": admin_id}
     session['user'] = studentInfo
 
     if role == 'STUDENT':
@@ -235,8 +241,6 @@ def login():
         return redirect(url_for('selectExamPage'))
     else:
         return redirect(url_for('adminStudents'))
-
-
 
 
 @app.route('/logout')
@@ -251,13 +255,11 @@ def uploadExam():
     if guard:
         return guard
 
-    # Check with the correct key name (capital 'R')
     if studentInfo.get("Role") != "ADMIN":
         flash("Unauthorized access", "error")
         return redirect(url_for('main'))
 
     return render_template('upload_exam.html')
-
 
 
 @app.route('/uploadExamAction', methods=['POST'])
@@ -275,48 +277,44 @@ def uploadExamAction():
         return redirect(url_for('uploadExam'))
 
     filename = secure_filename(csv_file.filename)
-    save_dir = os.path.join(app.root_path, "static", "ExamCSVs")  # ✅ absolute path
+    save_dir = EXAM_CSV_DIR
     os.makedirs(save_dir, exist_ok=True)
     filepath = os.path.join(save_dir, filename)
     csv_file.save(filepath)
 
-    print(f"📁 Saved CSV to: {filepath}")
-    cur = mysql.connection.cursor()
-    cur.execute("INSERT INTO exams (admin_id, exam_name, csv_filename) VALUES (%s, %s, %s)", (admin_id, exam_name, filename))
-    exam_id = cur.lastrowid
-    print(f"🧾 New exam inserted with ID={exam_id}")
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO exams (admin_id, exam_name, csv_filename)
+        VALUES (%s, %s, %s)
+        RETURNING id
+    """, (admin_id, exam_name, filename))
+    exam_id = cur.fetchone()[0]
 
     inserted, skipped = 0, 0
-
     try:
         with open(filepath, "r", encoding="utf-8-sig", newline='') as f:
             reader = csv.reader(f, delimiter=',')
-            headers = next(reader)
-            print("🧩 CSV Headers:", headers)
-
+            headers = next(reader, None)  # Title,Choice A,B,C,D,Correct Answer
             for row in reader:
-                print("ROW:", row)
                 if len(row) < 6:
-                    print("⚠️ Skipping malformed row:", row)
                     skipped += 1
                     continue
-
-                title, a, b, c, d, ans = [r.strip() for r in row]
+                title, a, b, c, d, ans = [r.strip() for r in row[:6]]
                 cur.execute("""
                     INSERT INTO questions (exam_id, title, choice_a, choice_b, choice_c, choice_d, correct_answer)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """, (exam_id, title, a, b, c, d, ans))
                 inserted += 1
-
-        mysql.connection.commit()
-        cur.close()
+        conn.commit()
     except Exception as e:
         import traceback
         traceback.print_exc()
+        conn.rollback()
         flash(f"⚠️ Error inserting questions: {e}", "error")
-        return redirect(url_for('uploadExam'))
-
-    print(f"✅ Inserted {inserted} questions, Skipped {skipped}")
+    finally:
+        cur.close()
+        conn.close()
 
     flash(f"Exam uploaded successfully! Inserted {inserted} questions.", "success")
     return redirect(url_for('adminResults'))
@@ -332,19 +330,21 @@ def selectExamPage():
         return redirect(url_for('main'))
 
     admin_id = studentInfo.get("admin_id")
-    cur = mysql.connection.cursor()
-    cur.execute("SELECT * FROM exams WHERE admin_id=%s", (admin_id,))
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, exam_name, csv_filename FROM exams WHERE admin_id=%s", (admin_id,))
     exams = cur.fetchall()
     cur.close()
+    conn.close()
 
     return render_template('exam_selection.html', exams=exams)
+
 
 @app.route('/selectExam/<int:exam_id>', methods=['POST'])
 def selectExam(exam_id):
     session['selected_exam'] = exam_id
     print(f"✅ Exam {exam_id} stored in session.")
-    return redirect(url_for('rules'))  # ✅ Go to rules first
-
+    return redirect(url_for('rules'))  # Go to rules first
 
 
 @app.route('/getExamQuestions')
@@ -353,24 +353,24 @@ def getExamQuestions():
     if guard:
         return guard
 
-    # ✅ Always check both query and session
-    exam_id = request.args.get("exam_id", type=int)
-    if not exam_id:
-        exam_id = session.get("selected_exam")
-
+    # Always check both query and session
+    exam_id = request.args.get("exam_id", type=int) or session.get("selected_exam")
     print(f"🧩 DEBUG: Requested questions for exam_id = {exam_id}")
 
     if not exam_id:
         print("❌ No exam_id found in session or query.")
         return jsonify([])
 
-    cur = mysql.connection.cursor()
+    conn = get_connection()
+    cur = conn.cursor()
     cur.execute("""
         SELECT title, choice_a, choice_b, choice_c, choice_d, correct_answer
         FROM questions WHERE exam_id=%s
+        ORDER BY id ASC
     """, (exam_id,))
     rows = cur.fetchall()
     cur.close()
+    conn.close()
 
     print(f"📊 DEBUG: Found {len(rows)} questions in DB for exam_id={exam_id}")
 
@@ -393,18 +393,20 @@ def submitExam():
     exam_id = data.get("exam_id")
     answers = data.get("answers", {})
 
-    cur = mysql.connection.cursor()
-    cur.execute("SELECT title, correct_answer FROM questions WHERE exam_id=%s", (exam_id,))
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT title, correct_answer FROM questions WHERE exam_id=%s ORDER BY id ASC", (exam_id,))
     rows = cur.fetchall()
     cur.close()
+    conn.close()
 
     total_questions = len(rows)
     correct = 0
 
-    # Compare answers
+    # Compare answers (by index order)
     for idx, (title, correct_answer) in enumerate(rows):
         chosen = answers.get(str(idx)) or answers.get(idx)
-        if chosen and chosen.strip().lower() == correct_answer.strip().lower():
+        if chosen and chosen.strip().lower() == str(correct_answer).strip().lower():
             correct += 1
 
     total_marks = correct * 1  # 1 mark each
@@ -412,13 +414,12 @@ def submitExam():
     status = "PASS" if percentage >= 50 else "FAIL"
     date = time.strftime("%Y-%m-%d %H:%M:%S")
 
-    # Save to result.json
-    import json, utils
+    # Save to result.json (your current storage)
     rid = utils.get_resultId()
     result_entry = {
         "Id": rid,
         "Name": studentInfo["Name"],
-        "ExamName": utils.Student_Name,
+        "ExamName": utils.Student_Name,  # keeping your current behavior
         "ExamId": exam_id,
         "Marks": total_marks,
         "Total": total_questions,
@@ -432,11 +433,11 @@ def submitExam():
         if not os.path.exists("result.json"):
             with open("result.json", "w") as f:
                 json.dump([], f)
-        with open("result.json", "r+") as f:
-            data = json.load(f)
-            data.append(result_entry)
+        with open("result.json", "r+", encoding="utf-8") as f:
+            data_json = json.load(f)
+            data_json.append(result_entry)
             f.seek(0)
-            json.dump(data, f, indent=4)
+            json.dump(data_json, f, indent=4)
     except Exception as e:
         print("⚠️ Failed to write result.json:", e)
 
@@ -454,17 +455,17 @@ def submitExam():
 def rules():
     guard = require_login()
     if guard: return guard
-
     exam_id = session.get('selected_exam')
     return render_template('ExamRules.html', exam_id=exam_id)
+
 
 @app.route('/faceInput')
 def faceInput():
     guard = require_login()
     if guard: return guard
-
     exam_id = session.get('selected_exam')
     return render_template('ExamFaceInput.html', exam_id=exam_id)
+
 
 @app.route('/saveFaceInput')
 def saveFaceInput():
@@ -491,6 +492,7 @@ def saveFaceInput():
     release_camera()
     return redirect(url_for('confirmFaceInput'))
 
+
 @app.route('/confirmFaceInput')
 def confirmFaceInput():
     guard = require_login()
@@ -503,13 +505,14 @@ def confirmFaceInput():
         print(f"Encode faces error: {e}")
     return render_template('ExamConfirmFaceInput.html', profile=profileName, exam_id=exam_id)
 
+
 @app.route('/systemCheck')
 def systemCheck():
     guard = require_login()
     if guard: return guard
-
     exam_id = session.get('selected_exam')
     return render_template('ExamSystemCheck.html', exam_id=exam_id)
+
 
 @app.route('/systemCheck', methods=["POST"])
 def systemCheckRoute():
@@ -521,14 +524,16 @@ def systemCheckRoute():
         output = 'systemCheckError'
     return jsonify({"output": output})
 
+
 @app.route('/systemCheckError')
 def systemCheckError():
     guard = require_login()
     if guard: return guard
     return render_template('ExamSystemCheckError.html')
 
+
 # ---------------------------
-# Exam Start
+# Exam Start Pages
 # ---------------------------
 @app.route('/exam')
 def exam():
@@ -536,17 +541,19 @@ def exam():
     if guard:
         return guard
 
-    # ✅ Get exam ID from session (set by /selectExam)
+    # Get exam ID from session
     exam_id = session.get('selected_exam')
     if not exam_id:
         flash("No exam selected. Please choose an exam first.", "error")
         return redirect(url_for('selectExamPage'))
 
-    # ✅ Fetch exam name for display
-    cur = mysql.connection.cursor()
+    # Fetch exam name
+    conn = get_connection()
+    cur = conn.cursor()
     cur.execute("SELECT exam_name FROM exams WHERE id=%s", (exam_id,))
     exam = cur.fetchone()
     cur.close()
+    conn.close()
 
     if not exam:
         flash("Exam not found.", "error")
@@ -554,9 +561,7 @@ def exam():
 
     exam_name = exam[0]
 
-    # -----------------------
-    # ✅ Proctoring logic (unchanged)
-    # -----------------------
+    # Proctoring logic
     init_camera()
     keyboard.hook(utils.shortcut_handler)
     utils.Globalflag = True
@@ -578,16 +583,8 @@ def exam():
 
     threading.Thread(target=start_proctoring_threads, daemon=True).start()
 
-    # ✅ Return template with exam_id + name
     return render_template('Exam.html', exam_id=exam_id, exam_name=exam_name, student_name=studentInfo["Name"])
 
-
-
-# ---------------------------
-# Exam Submit
-# ---------------------------
-import csv
-from flask import jsonify
 
 @app.route('/exam/<int:exam_id>')
 def examPage(exam_id):
@@ -595,21 +592,21 @@ def examPage(exam_id):
     if guard:
         return guard
 
-    session['selected_exam'] = exam_id  # store in session for fallback
+    session['selected_exam'] = exam_id  # store in session
 
-    # Optional validation
-    cur = mysql.connection.cursor()
+    # Validate and get name
+    conn = get_connection()
+    cur = conn.cursor()
     cur.execute("SELECT exam_name FROM exams WHERE id=%s", (exam_id,))
     exam = cur.fetchone()
     cur.close()
+    conn.close()
 
     if not exam:
         flash("Exam not found.", "error")
         return redirect(url_for('selectExamPage'))
 
-    # ✅ Pass exam_id and exam_name to template
     return render_template("Exam.html", exam_id=exam_id, exam_name=exam[0])
-
 
 
 # ---------------------------
@@ -621,17 +618,18 @@ def showResultPass(result_status):
     if guard: return guard
     return render_template('ExamResultPass.html', result_status=result_status)
 
+
 @app.route('/showResultFail/<result_status>')
 def showResultFail(result_status):
     guard = require_login()
     if guard: return guard
     return render_template('ExamResultFail.html', result_status=result_status)
 
+
 @app.route('/adminResults')
 def adminResults():
-    import utils
     try:
-        results = utils.getResults()  # read from results.json
+        results = utils.getResults()  # read from result.json
     except Exception as e:
         print(f"⚠️ Error loading results: {e}")
         results = []
@@ -649,6 +647,7 @@ def adminResultDetails(resultId):
         result_details = {"Result": [], "Violation": []}
     return render_template('ResultDetails.html', resultDetials=result_details)
 
+
 @app.route('/adminResultDetailsVideo/<path:videoInfo>')
 def adminResultDetailsVideo(videoInfo):
     """
@@ -656,7 +655,6 @@ def adminResultDetailsVideo(videoInfo):
     videoInfo = "<filename>;<resultId>"
     """
     try:
-        # Debug print to confirm data flow
         print(f"🎬 Opening ResultDetailsVideo.html for: {videoInfo}")
         return render_template('ResultDetailsVideo.html', videoInfo=videoInfo)
     except Exception as e:
@@ -665,16 +663,23 @@ def adminResultDetailsVideo(videoInfo):
         return redirect(url_for('adminResults'))
 
 
-
+# ---------------------------
+# Admin Students (Postgres)
+# ---------------------------
 @app.route('/adminStudents')
 def adminStudents():
     guard = require_login()
     if guard: return guard
-    cur = mysql.connection.cursor()
-    cur.execute("SELECT * FROM students WHERE Role='STUDENT'")
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, name, email, password, role, admin_id FROM students WHERE role='STUDENT' ORDER BY id DESC")
     data = cur.fetchall()
     cur.close()
+    conn.close()
+
     return render_template('Students.html', students=data)
+
 
 @app.route('/insertStudent', methods=['POST'])
 def insertStudent():
@@ -682,57 +687,69 @@ def insertStudent():
     if guard:
         return guard
 
-    name = request.form.get('username', '')
-    email = request.form.get('email', '')
-    password = request.form.get('password', '')
+    name = request.form.get('username', '').strip()
+    email = request.form.get('email', '').strip()
+    password = request.form.get('password', '').strip()
 
-    # Get currently logged-in admin's ID
     admin_id = studentInfo['Id']
 
-    cur = mysql.connection.cursor()
+    conn = get_connection()
+    cur = conn.cursor()
     cur.execute("""
-        INSERT INTO students (Name, Email, Password, Role, admin_id)
+        INSERT INTO students (name, email, password, role, admin_id)
         VALUES (%s, %s, %s, 'STUDENT', %s)
     """, (name, email, password, admin_id))
-    mysql.connection.commit()
+    conn.commit()
     cur.close()
+    conn.close()
 
     flash("Student added successfully and linked to your account!", "success")
     return redirect(url_for('adminStudents'))
+
 
 @app.route('/deleteStudent/<string:stdId>')
 def deleteStudent(stdId):
     guard = require_login()
     if guard: return guard
-    flash("Record deleted successfully.")
-    cur = mysql.connection.cursor()
-    cur.execute("DELETE FROM students WHERE ID=%s", (stdId,))
-    mysql.connection.commit()
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM students WHERE id=%s", (stdId,))
+    conn.commit()
     cur.close()
+    conn.close()
+
+    flash("Record deleted successfully.")
     return redirect(url_for('adminStudents'))
+
 
 @app.route('/updateStudent', methods=['POST'])
 def updateStudent():
     guard = require_login()
     if guard: return guard
-    id_data = request.form.get('id', '')
-    name = request.form.get('name', '')
-    email = request.form.get('email', '')
-    password = request.form.get('password', '')
-    cur = mysql.connection.cursor()
-    cur.execute("""UPDATE students SET Name=%s, Email=%s, Password=%s WHERE ID=%s""",
-                (name, email, password, id_data))
-    mysql.connection.commit()
+
+    id_data = request.form.get('id', '').strip()
+    name = request.form.get('name', '').strip()
+    email = request.form.get('email', '').strip()
+    password = request.form.get('password', '').strip()
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE students
+        SET name=%s, email=%s, password=%s
+        WHERE id=%s
+    """, (name, email, password, id_data))
+    conn.commit()
     cur.close()
+    conn.close()
+
     return redirect(url_for('adminStudents'))
+
 
 # ---------------------------
 # Entry Point
 # ---------------------------
 if __name__ == '__main__':
-    os.makedirs('static/Profiles', exist_ok=True)
-    os.makedirs('static/OutputVideos', exist_ok=True)
-    os.makedirs('static/OutputAudios', exist_ok=True)
-    # Add threaded=True so the generator (/video_capture) can’t starve other handlers.
-    app.run(debug=True, threaded=True)
-
+    # On local dev, threaded=True so the generator (/video_capture) doesn’t starve other handlers.
+    app.run(debug=True, threaded=True, host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
