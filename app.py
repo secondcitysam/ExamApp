@@ -65,6 +65,54 @@ def get_connection():
 
 
 # ---------------------------
+# Auto-create required tables on startup (Render-safe)
+# ---------------------------
+def initialize_database():
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS students (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'STUDENT',
+            admin_id INTEGER
+        );
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS exams (
+            id SERIAL PRIMARY KEY,
+            admin_id INTEGER NOT NULL,
+            exam_name TEXT NOT NULL,
+            csv_filename TEXT
+        );
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS questions (
+            id SERIAL PRIMARY KEY,
+            exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            choice_a TEXT NOT NULL,
+            choice_b TEXT NOT NULL,
+            choice_c TEXT NOT NULL,
+            choice_d TEXT NOT NULL,
+            correct_answer TEXT NOT NULL
+        );
+        """)
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("✅ PostgreSQL tables verified/created successfully.")
+    except Exception as e:
+        print(f"⚠️ Error creating tables: {e}")
+
+# ---------------------------
 # Serve Recorded Videos (range support)
 # ---------------------------
 @app.route('/video/<path:filename>')
@@ -748,8 +796,30 @@ def updateStudent():
 
 
 # ---------------------------
+# Debug route to verify DB tables
+# ---------------------------
+@app.route('/debug_tables')
+def debug_tables():
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema='public'
+            ORDER BY table_name;
+        """)
+        tables = [row[0] for row in cur.fetchall()]
+        cur.close()
+        conn.close()
+        return jsonify({"tables": tables, "status": "✅ connected to Postgres"})
+    except Exception as e:
+        return jsonify({"error": str(e), "status": "⚠️ connection or query failed"})
+
+
+# ---------------------------
 # Entry Point
 # ---------------------------
 if __name__ == '__main__':
-    # On local dev, threaded=True so the generator (/video_capture) doesn’t starve other handlers.
+    initialize_database()  # ✅ Auto-create tables
     app.run(debug=True, threaded=True, host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
